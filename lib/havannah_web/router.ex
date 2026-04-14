@@ -8,6 +8,7 @@ defmodule HavannahWeb.Router do
     plug :put_root_layout, html: {HavannahWeb.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
+    plug :ensure_session_id
   end
 
   pipeline :api do
@@ -17,13 +18,20 @@ defmodule HavannahWeb.Router do
   scope "/", HavannahWeb do
     pipe_through :browser
 
-    live "/", GameLive
+    live "/", LobbyLive
+    live "/game/:id", GameLive
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", HavannahWeb do
-  #   pipe_through :api
-  # end
+  # Seed a persistent session ID so users keep their player slot across
+  # page refreshes within the same browser session.
+  defp ensure_session_id(conn, _opts) do
+    if Plug.Conn.get_session(conn, :session_id) do
+      conn
+    else
+      id = :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
+      Plug.Conn.put_session(conn, :session_id, id)
+    end
+  end
 
   # Enable LiveDashboard in development
   if Application.compile_env(:havannah, :dev_routes) do

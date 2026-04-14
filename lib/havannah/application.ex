@@ -11,8 +11,8 @@ defmodule Havannah.Application do
       HavannahWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:havannah, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Havannah.PubSub},
-      # Start a worker by calling: Havannah.Worker.start_link(arg)
-      # {Havannah.Worker, arg},
+      {Registry, keys: :unique, name: Havannah.GameRegistry},
+      Havannah.GameSupervisor,
       # Start to serve requests, typically the last entry
       HavannahWeb.Endpoint
     ]

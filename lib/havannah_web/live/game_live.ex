@@ -1,7 +1,7 @@
 defmodule HavannahWeb.GameLive do
   use HavannahWeb, :live_view
 
-  alias Havannah.Game
+  alias Havannah.{Game, GameServer, GameSupervisor}
 
   # SVG layout constants for a pointy-top hex grid.
   # viewBox is "0 0 700 620"; board is centered at (@svg_cx, @svg_cy).
@@ -9,105 +9,99 @@ defmodule HavannahWeb.GameLive do
   @svg_cx 350.0
   @svg_cy 310.0
 
-  @impl true
-  def mount(_params, _session, socket) do
-    game = Game.new(:player_1, :player_2)
+  # ---------------------------------------------------------------------------
+  # Lifecycle
+  # ---------------------------------------------------------------------------
 
-    {:ok,
-     socket
-     |> assign(:game, game)
-     |> assign(:board_cells, build_board_cells(game))}
+  @impl true
+  def mount(%{"id" => game_id}, session, socket) do
+    session_id = Map.get(session, "session_id", socket.id)
+
+    case GameServer.get_state(game_id) do
+      {:error, :not_found} ->
+        {:ok, push_navigate(socket, to: ~p"/")}
+
+      {:ok, game_state} ->
+        socket =
+          socket
+          |> assign(:game_id, game_id)
+          |> assign(:session_id, session_id)
+          |> assign(:game_state, game_state)
+          |> assign(:role, nil)
+
+        if connected?(socket) do
+          Phoenix.PubSub.subscribe(Havannah.PubSub, "game:#{game_id}")
+          {:ok, role} = GameServer.join(game_id, session_id)
+          {:ok, updated_state} = GameServer.get_state(game_id)
+
+          {:ok,
+           socket
+           |> assign(:role, role)
+           |> assign(:game_state, updated_state)
+           |> assign(:board_cells, build_board_cells(updated_state.game))}
+        else
+          {:ok,
+           socket
+           |> assign(:board_cells, build_board_cells(game_state.game))}
+        end
+    end
   end
+
+  # ---------------------------------------------------------------------------
+  # Events
+  # ---------------------------------------------------------------------------
 
   @impl true
   def handle_event("place", %{"q" => q_str, "r" => r_str}, socket) do
     q = String.to_integer(q_str)
     r = String.to_integer(r_str)
-
-    case Game.place(socket.assigns.game, {q, r}) do
-      {:ok, new_game} ->
-        {:noreply,
-         socket
-         |> assign(:game, new_game)
-         |> assign(:board_cells, build_board_cells(new_game))}
-
-      {:error, _reason} ->
-        {:noreply, socket}
-    end
+    GameServer.place(socket.assigns.game_id, socket.assigns.session_id, {q, r})
+    {:noreply, socket}
   end
 
   def handle_event("new_game", _params, socket) do
-    game = Game.new(:player_1, :player_2)
+    mode = socket.assigns.game_state.mode
+    {:ok, game_id} = GameSupervisor.start_game(mode)
+    {:noreply, push_navigate(socket, to: ~p"/game/#{game_id}")}
+  end
 
+  # ---------------------------------------------------------------------------
+  # PubSub
+  # ---------------------------------------------------------------------------
+
+  @impl true
+  def handle_info({:game_updated, game_state}, socket) do
     {:noreply,
      socket
-     |> assign(:game, game)
-     |> assign(:board_cells, build_board_cells(game))}
+     |> assign(:game_state, game_state)
+     |> assign(:board_cells, build_board_cells(game_state.game))}
   end
 
-  # Pre-compute per-cell rendering data once per game state change.
-  defp build_board_cells(game) do
-    Enum.map(game.board, fn {{q, r}, side} ->
-      %{
-        q: q,
-        r: r,
-        side: side,
-        points: hex_polygon_points(q, r),
-        last_move: {q, r} == game.last_move
-      }
-    end)
-  end
-
-  # Pointy-top hexagon: center pixel from axial (q, r), then 6 vertices at
-  # angles 30°, 90°, 150°, 210°, 270°, 330° from the center.
-  defp hex_polygon_points(q, r) do
-    cx = :math.sqrt(3) * q * @hex_size + :math.sqrt(3) / 2 * r * @hex_size + @svg_cx
-    cy = 1.5 * r * @hex_size + @svg_cy
-
-    Enum.map(0..5, fn i ->
-      angle_rad = :math.pi() / 180.0 * (30.0 + 60.0 * i)
-      vx = Float.round(cx + @hex_size * :math.cos(angle_rad), 2)
-      vy = Float.round(cy + @hex_size * :math.sin(angle_rad), 2)
-      "#{vx},#{vy}"
-    end)
-    |> Enum.join(" ")
-  end
-
-  defp player_label(:player_1), do: "Player 1"
-  defp player_label(:player_2), do: "Player 2"
-
-  defp side_label(:blue), do: "Blue"
-  defp side_label(:red), do: "Red"
-  defp side_label(nil), do: ""
+  # ---------------------------------------------------------------------------
+  # Rendering
+  # ---------------------------------------------------------------------------
 
   @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash}>
       <div id="havannah-game" class="flex flex-col items-center gap-4">
-        <%!-- Status bar --%>
+        <%!-- Top bar: status + new game --%>
         <div class="w-full flex items-center justify-between">
           <div class="flex items-center gap-2">
             <div class={[
               "w-4 h-4 rounded-full shadow-sm",
-              Game.player_side(@game, @game.current_player) == :blue && "bg-blue-500",
-              Game.player_side(@game, @game.current_player) == :red && "bg-red-500"
+              current_side(@game_state) == :blue && "bg-blue-500",
+              current_side(@game_state) == :red && "bg-red-500",
+              is_nil(current_side(@game_state)) && "bg-base-300"
             ]}>
             </div>
             <span class="font-semibold text-base-content text-sm">
-              {player_label(@game.current_player)}'s turn
-              <span class={[
-                "ml-1 font-normal",
-                Game.player_side(@game, @game.current_player) == :blue && "text-blue-500",
-                Game.player_side(@game, @game.current_player) == :red && "text-red-500"
-              ]}>
-                ({side_label(Game.player_side(@game, @game.current_player))})
-              </span>
+              {status_text(assigns)}
             </span>
           </div>
 
           <button
-            id="new-game-btn"
             phx-click="new_game"
             class="btn btn-sm btn-ghost text-base-content/60 hover:text-base-content"
           >
@@ -115,18 +109,49 @@ defmodule HavannahWeb.GameLive do
           </button>
         </div>
 
-        <%!-- Side legend --%>
+        <%!-- Info row: mode / role / shareable link --%>
+        <div class="w-full flex flex-wrap items-center gap-3 text-xs text-base-content/50">
+          <span class="badge badge-ghost badge-sm">{mode_label(@game_state.mode)}</span>
+
+          <%= if @role do %>
+            <span class={[
+              "badge badge-sm",
+              @role == :player_1 && "badge-info",
+              @role == :player_2 && "badge-error",
+              @role == :spectator && "badge-ghost"
+            ]}>
+              {role_label(@role, @game_state)}
+            </span>
+          <% end %>
+
+          <%= if @game_state.mode == :human_vs_human do %>
+            <span class="ml-auto flex items-center gap-1">
+              Share:
+              <span
+                class="font-mono text-base-content/70 underline cursor-pointer"
+                title={game_url(@game_state.id)}
+                phx-click={JS.dispatch("phx:copy", detail: %{text: game_url(@game_state.id)})}
+              >
+                /game/{@game_state.id}
+              </span>
+            </span>
+          <% end %>
+        </div>
+
+        <%!-- Legend + last move --%>
         <div class="w-full flex gap-4 text-xs text-base-content/50">
           <span class="flex items-center gap-1">
-            <span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500"></span> Player 1 — Blue
+            <span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500"></span>
+            {player_side_label(@game_state, :player_1)}
           </span>
           <span class="flex items-center gap-1">
-            <span class="inline-block w-2.5 h-2.5 rounded-full bg-red-500"></span> Player 2 — Red
+            <span class="inline-block w-2.5 h-2.5 rounded-full bg-red-500"></span>
+            {player_side_label(@game_state, :player_2)}
           </span>
-          <%= if @game.last_move do %>
+          <%= if @game_state.game.last_move do %>
             <span class="ml-auto flex items-center gap-1">
               <span class="inline-block w-2.5 h-2.5 rounded-sm border-2 border-amber-400"></span>
-              Last move ({elem(@game.last_move, 0)}, {elem(@game.last_move, 1)})
+              Last ({elem(@game_state.game.last_move, 0)}, {elem(@game_state.game.last_move, 1)})
             </span>
           <% end %>
         </div>
@@ -152,7 +177,7 @@ defmodule HavannahWeb.GameLive do
                   cell.side == :red && "hex-red",
                   cell.last_move && "hex-last-move"
                 ]}
-                phx-click={is_nil(cell.side) && "place"}
+                phx-click={can_move?(assigns, cell) && "place"}
                 phx-value-q={cell.q}
                 phx-value-r={cell.r}
               />
@@ -162,5 +187,101 @@ defmodule HavannahWeb.GameLive do
       </div>
     </Layouts.app>
     """
+  end
+
+  # ---------------------------------------------------------------------------
+  # Private helpers
+  # ---------------------------------------------------------------------------
+
+  defp build_board_cells(game) do
+    Enum.map(game.board, fn {{q, r}, side} ->
+      %{
+        q: q,
+        r: r,
+        side: side,
+        points: hex_polygon_points(q, r),
+        last_move: {q, r} == game.last_move
+      }
+    end)
+  end
+
+  defp hex_polygon_points(q, r) do
+    cx = :math.sqrt(3) * q * @hex_size + :math.sqrt(3) / 2 * r * @hex_size + @svg_cx
+    cy = 1.5 * r * @hex_size + @svg_cy
+
+    Enum.map(0..5, fn i ->
+      angle_rad = :math.pi() / 180.0 * (30.0 + 60.0 * i)
+      vx = Float.round(cx + @hex_size * :math.cos(angle_rad), 2)
+      vy = Float.round(cy + @hex_size * :math.sin(angle_rad), 2)
+      "#{vx},#{vy}"
+    end)
+    |> Enum.join(" ")
+  end
+
+  # True when this viewer can place a stone on the given empty cell right now.
+  defp can_move?(%{role: role, game_state: gs} = _assigns, cell) do
+    is_nil(cell.side) and
+      role in [:player_1, :player_2] and
+      gs.status == :playing and
+      gs.game.current_player == role
+  end
+
+  defp current_side(%{game: game}) do
+    Game.player_side(game, game.current_player)
+  end
+
+  defp status_text(%{game_state: %{status: :waiting}} = _assigns) do
+    "Waiting for players…"
+  end
+
+  defp status_text(%{game_state: %{status: :ai_thinking}} = _assigns) do
+    "AI is thinking…"
+  end
+
+  defp status_text(%{role: role, game_state: gs} = _assigns) do
+    current = gs.game.current_player
+    side = Game.player_side(gs.game, current)
+    side_str = side_label(side)
+
+    if role == current do
+      "Your turn (#{side_str})"
+    else
+      "#{player_label(current, gs)}'s turn (#{side_str})"
+    end
+  end
+
+  defp player_label(role, game_state) do
+    case {role, game_state.mode} do
+      {:player_2, :human_vs_ai} -> "AI"
+      {:player_1, _} -> "Player 1"
+      {:player_2, _} -> "Player 2"
+    end
+  end
+
+  defp player_side_label(game_state, role) do
+    side = Game.player_side(game_state.game, role)
+    name = player_label(role, game_state)
+    "#{name} — #{side_label(side)}"
+  end
+
+  defp role_label(:player_1, _gs), do: "You are Player 1 (Blue)"
+  defp role_label(:player_2, %{mode: :human_vs_ai}), do: "You are Player 1 (Blue)"
+
+  defp role_label(:player_2, gs) do
+    side = Game.player_side(gs.game, :player_2)
+    "You are Player 2 (#{side_label(side)})"
+  end
+
+  defp role_label(:spectator, _gs), do: "Spectator"
+
+  defp mode_label(:human_vs_human), do: "Human vs Human"
+  defp mode_label(:human_vs_ai), do: "Human vs AI"
+
+  defp side_label(:blue), do: "Blue"
+  defp side_label(:red), do: "Red"
+  defp side_label(nil), do: ""
+
+  defp game_url(game_id) do
+    HavannahWeb.Endpoint.url() <> ~p"/game/#{game_id}"
   end
 end

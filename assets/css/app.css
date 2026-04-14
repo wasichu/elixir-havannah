@@ -103,3 +103,54 @@
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
 /* This file is for your main application CSS */
+
+/* Havannah board */
+.hex-cell {
+  stroke: #94a3b8;
+  stroke-width: 1.5;
+  transition: fill 0.12s ease;
+}
+
+.hex-empty {
+  fill: #dde5ef;
+  cursor: pointer;
+}
+
+.hex-empty:hover {
+  fill: #b8c9de;
+}
+
+.hex-blue {
+  fill: #3b82f6;
+  cursor: default;
+}
+
+.hex-red {
+  fill: #ef4444;
+  cursor: default;
+}
+
+.hex-last-move {
+  stroke: #f59e0b;
+  stroke-width: 3;
+}
+
+[data-theme=dark] .hex-cell {
+  stroke: #475569;
+}
+
+[data-theme=dark] .hex-empty {
+  fill: #1e293b;
+}
+
+[data-theme=dark] .hex-empty:hover {
+  fill: #334155;
+}
+
+[data-theme=dark] .hex-blue {
+  fill: #2563eb;
+}
+
+[data-theme=dark] .hex-red {
+  fill: #dc2626;
+}

@@ -101,30 +101,32 @@ Follow this sequence strictly. Do NOT jump directly to ring detection.
 
 ### Step 5: Ring Detection (IMPORTANT)
 
-* A ring occurs when a player forms a loop that **encloses at least one cell**
+- A ring occurs when a player forms a loop of their stones that encloses one or more cells.
 
-* Implement a correct and understandable approach:
+- The enclosed region must:
+  - contain at least one cell not occupied by the player (empty or opponent)
+  - be completely cut off from the boundary of the board (no path to the outside)
 
-  * prefer clarity over cleverness
-  * avoid overly compact or “magic” solutions
+- Do NOT require that the enclosed region contains opponent stones.
+
+- Implement a correct and understandable approach:
+  - prefer clarity over cleverness
+  - avoid overly compact or “magic” solutions
 
 Suggested approach (one option):
 
-* After each move:
+- After each move:
+  - treat the player’s stones as blocking cells
+  - perform a flood fill from outside the board
+  - any empty cells NOT reachable are enclosed
+  - if such cells exist, a ring has been formed
 
-  * consider the player’s stones as blocking cells
-  * perform a flood fill from outside the board
-  * any empty cells NOT reachable are enclosed
-  * verify that the enclosing boundary belongs to the player
-
-Alternative correct approaches are acceptable if well-structured and testable.
-
-* Add strong tests for:
-
-  * simple rings
-  * non-rings that look similar
-  * edge-adjacent shapes that should NOT count
-  * minimal enclosing loops
+- Add strong tests for:
+  - simple rings
+  - rings enclosing empty space
+  - rings enclosing opponent stones
+  - non-rings that appear similar
+  - shapes that touch the boundary and should NOT count
 
 ---
 

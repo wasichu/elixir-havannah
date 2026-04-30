@@ -28,21 +28,24 @@ defmodule HavannahWeb.GameLive do
           |> assign(:session_id, session_id)
           |> assign(:game_state, game_state)
           |> assign(:role, nil)
+          |> assign(:remaining_seconds, nil)
 
         if connected?(socket) do
           Phoenix.PubSub.subscribe(Havannah.PubSub, "game:#{game_id}")
           {:ok, role} = GameServer.join(game_id, session_id)
           {:ok, updated_state} = GameServer.get_state(game_id)
 
-          {:ok,
-           socket
-           |> assign(:role, role)
-           |> assign(:game_state, updated_state)
-           |> assign(:board_cells, build_board_cells(updated_state.game))}
+          socket =
+            socket
+            |> assign(:role, role)
+            |> assign(:game_state, updated_state)
+            |> assign(:board_cells, build_board_cells(updated_state.game))
+            |> assign(:remaining_seconds, remaining_seconds(updated_state.move_deadline))
+            |> schedule_tick()
+
+          {:ok, socket}
         else
-          {:ok,
-           socket
-           |> assign(:board_cells, build_board_cells(game_state.game))}
+          {:ok, assign(socket, :board_cells, build_board_cells(game_state.game))}
         end
     end
   end
@@ -65,22 +68,40 @@ defmodule HavannahWeb.GameLive do
     {:noreply, socket}
   end
 
-  def handle_event("new_game", _params, socket) do
+  def handle_event("resign", _params, socket) do
+    GameServer.resign(socket.assigns.game_id, socket.assigns.session_id)
+    {:noreply, socket}
+  end
+
+  def handle_event("rematch", _params, socket) do
     mode = socket.assigns.game_state.mode
     {:ok, game_id} = GameSupervisor.start_game(mode)
     {:noreply, push_navigate(socket, to: ~p"/game/#{game_id}")}
   end
 
   # ---------------------------------------------------------------------------
-  # PubSub
+  # PubSub + timer tick
   # ---------------------------------------------------------------------------
 
   @impl true
   def handle_info({:game_updated, game_state}, socket) do
-    {:noreply,
-     socket
-     |> assign(:game_state, game_state)
-     |> assign(:board_cells, build_board_cells(game_state.game))}
+    socket =
+      socket
+      |> assign(:game_state, game_state)
+      |> assign(:board_cells, build_board_cells(game_state.game))
+      |> assign(:remaining_seconds, remaining_seconds(game_state.move_deadline))
+      |> schedule_tick()
+
+    {:noreply, socket}
+  end
+
+  def handle_info(:tick, socket) do
+    socket =
+      socket
+      |> assign(:remaining_seconds, remaining_seconds(socket.assigns.game_state.move_deadline))
+      |> schedule_tick()
+
+    {:noreply, socket}
   end
 
   # ---------------------------------------------------------------------------
@@ -92,30 +113,54 @@ defmodule HavannahWeb.GameLive do
     ~H"""
     <Layouts.app flash={@flash}>
       <div id="havannah-game" class="flex flex-col items-center gap-4">
-        <%!-- Top bar: status + new game --%>
-        <div class="w-full flex items-center justify-between">
-          <div class="flex items-center gap-2">
+        <%!-- Top bar: status dot + text + timer + rematch/resign --%>
+        <div class="w-full flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2 min-w-0">
             <div class={[
-              "w-4 h-4 rounded-full shadow-sm",
+              "w-4 h-4 shrink-0 rounded-full shadow-sm",
               current_side(@game_state) == :blue && "bg-blue-500",
               current_side(@game_state) == :red && "bg-red-500",
               is_nil(current_side(@game_state)) && "bg-base-300"
             ]}>
             </div>
-            <span class="font-semibold text-base-content text-sm">
+            <span class="font-semibold text-base-content text-sm truncate">
               {status_text(assigns)}
             </span>
           </div>
 
-          <button
-            phx-click="new_game"
-            class="btn btn-sm btn-ghost text-base-content/60 hover:text-base-content"
-          >
-            New Game
-          </button>
+          <div class="flex items-center gap-2 shrink-0">
+            <%!-- Per-move countdown timer --%>
+            <%= if @remaining_seconds && @game_state.game.phase in [:opening, :pie_decision, :playing] do %>
+              <div class={[
+                "font-mono text-sm font-semibold tabular-nums px-2 py-0.5 rounded-lg",
+                @remaining_seconds > 60 && "text-base-content/60",
+                @remaining_seconds <= 60 && @remaining_seconds > 20 && "text-warning",
+                @remaining_seconds <= 20 && "text-error animate-pulse"
+              ]}>
+                {format_time(@remaining_seconds)}
+              </div>
+            <% end %>
+
+            <%!-- Resign button (active games, human players only) --%>
+            <%= if can_resign?(assigns) do %>
+              <button
+                phx-click={JS.show(to: "#resign-confirm")}
+                class="btn btn-sm btn-ghost text-base-content/50 hover:text-error"
+              >
+                Resign
+              </button>
+            <% end %>
+
+            <%!-- Rematch button (game over only) --%>
+            <%= if @game_state.game.phase == :game_over do %>
+              <button phx-click="rematch" class="btn btn-sm btn-primary">
+                Rematch
+              </button>
+            <% end %>
+          </div>
         </div>
 
-        <%!-- Info row: mode / role / shareable link --%>
+        <%!-- Info row: mode / role / pie outcome / share --%>
         <div class="w-full flex flex-wrap items-center gap-3 text-xs text-base-content/50">
           <span class="badge badge-ghost badge-sm">{mode_label(@game_state.mode)}</span>
 
@@ -157,11 +202,21 @@ defmodule HavannahWeb.GameLive do
         <%!-- Legend + last move --%>
         <div class="w-full flex gap-4 text-xs text-base-content/50">
           <span class="flex items-center gap-1">
-            <span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500"></span>
+            <span class={[
+              "inline-block w-2.5 h-2.5 rounded-full",
+              Game.player_side(@game_state.game, :player_1) == :blue && "bg-blue-500",
+              Game.player_side(@game_state.game, :player_1) == :red && "bg-red-500"
+            ]}>
+            </span>
             {player_side_label(@game_state, :player_1)}
           </span>
           <span class="flex items-center gap-1">
-            <span class="inline-block w-2.5 h-2.5 rounded-full bg-red-500"></span>
+            <span class={[
+              "inline-block w-2.5 h-2.5 rounded-full",
+              Game.player_side(@game_state.game, :player_2) == :blue && "bg-blue-500",
+              Game.player_side(@game_state.game, :player_2) == :red && "bg-red-500"
+            ]}>
+            </span>
             {player_side_label(@game_state, :player_2)}
           </span>
           <%= if @game_state.game.last_move do %>
@@ -234,6 +289,40 @@ defmodule HavannahWeb.GameLive do
           </svg>
         </div>
       </div>
+
+      <%!-- Resign confirmation modal --%>
+      <div
+        id="resign-confirm"
+        class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+      >
+        <div
+          class="absolute inset-0 bg-black/50"
+          phx-click={JS.hide(to: "#resign-confirm")}
+        >
+        </div>
+        <div class="relative bg-base-100 rounded-2xl shadow-2xl p-6 max-w-xs w-full">
+          <h3 class="text-base font-bold text-base-content mb-2">Resign?</h3>
+          <p class="text-sm text-base-content/70 mb-5">
+            Your opponent will win. This cannot be undone.
+          </p>
+          <div class="flex gap-3">
+            <button
+              phx-click={JS.hide(to: "#resign-confirm") |> JS.push("resign")}
+              class="btn btn-error btn-sm flex-1"
+            >
+              Yes, resign
+            </button>
+            <button
+              phx-click={JS.hide(to: "#resign-confirm")}
+              class="btn btn-ghost btn-sm flex-1"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
     </Layouts.app>
     """
   end
@@ -267,7 +356,6 @@ defmodule HavannahWeb.GameLive do
     |> Enum.join(" ")
   end
 
-  # True when this viewer can place a stone on the given empty cell right now.
   defp can_move?(%{role: role, game_state: gs} = _assigns, cell) do
     is_nil(cell.side) and
       role in [:player_1, :player_2] and
@@ -276,8 +364,37 @@ defmodule HavannahWeb.GameLive do
       gs.game.current_player == role
   end
 
+  defp can_resign?(%{role: role, game_state: gs}) do
+    role in [:player_1, :player_2] and
+      gs.game.phase in [:opening, :pie_decision, :playing]
+  end
+
+  defp remaining_seconds(nil), do: nil
+
+  defp remaining_seconds(deadline) do
+    ms = deadline - :os.system_time(:millisecond)
+    max(0, div(ms, 1000))
+  end
+
+  defp schedule_tick(socket) do
+    if socket.assigns.game_state.move_deadline &&
+         socket.assigns.game_state.game.phase in [:opening, :pie_decision, :playing] do
+      Process.send_after(self(), :tick, 1000)
+    end
+
+    socket
+  end
+
+  defp format_time(seconds) do
+    m = div(seconds, 60)
+    s = rem(seconds, 60)
+    "#{m}:#{String.pad_leading("#{s}", 2, "0")}"
+  end
+
   defp pie_rule_outcome(%{phase: phase}) when phase in [:opening, :pie_decision], do: nil
-  defp pie_rule_outcome(%{sides: sides}), do: if(sides[:player_1] == :blue, do: :kept, else: :swapped)
+
+  defp pie_rule_outcome(%{sides: sides}),
+    do: if(sides[:player_1] == :blue, do: :kept, else: :swapped)
 
   defp current_side(%{game: game}) do
     Game.player_side(game, game.current_player)
@@ -294,7 +411,8 @@ defmodule HavannahWeb.GameLive do
   defp status_text(%{game_state: %{status: :game_over} = gs} = _assigns) do
     winner_side = gs.game.winner
     winner_player = Enum.find_value(gs.game.sides, fn {p, s} -> if s == winner_side, do: p end)
-    "#{player_label(winner_player, gs)} wins! (#{side_label(winner_side)})"
+    win_label = win_reason_label(gs.game.win_reason)
+    "#{player_label(winner_player, gs)} wins by #{win_label}"
   end
 
   defp status_text(%{role: role, game_state: %{game: %{phase: :pie_decision}} = gs} = _assigns) do
@@ -318,6 +436,13 @@ defmodule HavannahWeb.GameLive do
       "#{player_label(current, gs)}'s turn (#{side_str})"
     end
   end
+
+  defp win_reason_label(:bridge), do: "bridge"
+  defp win_reason_label(:fork), do: "fork"
+  defp win_reason_label(:ring), do: "ring"
+  defp win_reason_label(:resignation), do: "resignation"
+  defp win_reason_label(:timeout), do: "timeout"
+  defp win_reason_label(nil), do: "winning"
 
   defp player_label(role, game_state) do
     case {role, game_state.mode} do

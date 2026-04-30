@@ -31,6 +31,10 @@ defmodule Havannah.GameTest do
     test "last_move starts as nil", %{game: game} do
       assert is_nil(game.last_move)
     end
+
+    test "win_reason starts as nil", %{game: game} do
+      assert is_nil(game.win_reason)
+    end
   end
 
   # Helper: fast-forward through the pie decision with :keep so tests can
@@ -208,6 +212,7 @@ defmodule Havannah.GameTest do
 
       assert game.phase == :game_over
       assert game.winner == :blue
+      assert game.win_reason == :bridge
     end
 
     test "after game over, further placements are rejected" do
@@ -255,6 +260,44 @@ defmodule Havannah.GameTest do
 
       assert game.phase == :game_over
       assert game.winner == :blue
+      assert game.win_reason == :ring
+    end
+  end
+
+  describe "resign/2" do
+    test "player_1 resigning makes player_2's side the winner", %{game: game} do
+      {:ok, game} = Game.resign(game, :player_1)
+      assert game.winner == :red
+      assert game.win_reason == :resignation
+      assert game.phase == :game_over
+    end
+
+    test "player_2 resigning makes player_1's side the winner", %{game: game} do
+      {:ok, game} = Game.place(game, {0, 0}) |> skip_pie()
+      {:ok, game} = Game.resign(game, :player_2)
+      assert game.winner == :blue
+      assert game.win_reason == :resignation
+      assert game.phase == :game_over
+    end
+
+    test "resign works in :opening phase", %{game: game} do
+      assert {:ok, _} = Game.resign(game, :player_1)
+    end
+
+    test "resign works in :pie_decision phase", %{game: game} do
+      {:ok, game} = Game.place(game, {0, 0})
+      assert {:ok, _} = Game.resign(game, :player_2)
+    end
+
+    test "resign returns :game_not_playing after game over", %{game: game} do
+      {:ok, game} = Game.resign(game, :player_1)
+      assert {:error, :game_not_playing} = Game.resign(game, :player_2)
+    end
+
+    test "resign does not alter the board", %{game: game} do
+      board_before = game.board
+      {:ok, game} = Game.resign(game, :player_1)
+      assert game.board == board_before
     end
   end
 end

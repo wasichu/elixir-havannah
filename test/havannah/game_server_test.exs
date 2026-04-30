@@ -19,6 +19,8 @@ defmodule Havannah.GameServerTest do
   defp pie_decision(pid, session_id, choice),
     do: GenServer.call(pid, {:pie_decision, session_id, choice})
 
+  defp resign(pid, session_id), do: GenServer.call(pid, {:resign, session_id})
+
   # ---------------------------------------------------------------------------
   # Creating a game
   # ---------------------------------------------------------------------------
@@ -355,6 +357,161 @@ defmodule Havannah.GameServerTest do
 
       {:ok, state} = get_state(pid)
       assert state.game.current_player == :player_1
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Resign
+  # ---------------------------------------------------------------------------
+
+  describe "resign" do
+    setup do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+      {:ok, pid: pid}
+    end
+
+    test "player_1 can resign and player_2 wins", %{pid: pid} do
+      assert :ok = resign(pid, "alice")
+      {:ok, state} = get_state(pid)
+      assert state.game.phase == :game_over
+      assert state.game.winner == :red
+      assert state.game.win_reason == :resignation
+      assert state.status == :game_over
+    end
+
+    test "player_2 can resign and player_1 wins", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      pie_decision(pid, "bob", :keep)
+      assert :ok = resign(pid, "bob")
+      {:ok, state} = get_state(pid)
+      assert state.game.winner == :blue
+      assert state.game.win_reason == :resignation
+    end
+
+    test "spectator cannot resign", %{pid: pid} do
+      join(pid, "carol")
+      assert {:error, :spectator_cannot_resign} = resign(pid, "carol")
+    end
+
+    test "unknown session cannot resign", %{pid: pid} do
+      assert {:error, :not_in_game} = resign(pid, "ghost")
+    end
+
+    test "cannot resign after game is already over", %{pid: pid} do
+      resign(pid, "alice")
+      assert {:error, :game_not_playing} = resign(pid, "bob")
+    end
+
+    test "rematch starts fresh game with same mode", %{pid: pid} do
+      resign(pid, "alice")
+      {:ok, state} = get_state(pid)
+      assert state.status == :game_over
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Win reason
+  # ---------------------------------------------------------------------------
+
+  describe "win reason" do
+    test "ring win records :ring as win_reason" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+
+      # Blue builds a ring: {1,0},{0,1},{-1,1},{-1,0},{0,-1},{1,-1}
+      # Red plays 5 harmless moves in between
+      place(pid, "alice", {1, 0})
+      pie_decision(pid, "bob", :keep)
+      place(pid, "bob", {5, 0})
+      place(pid, "alice", {0, 1})
+      place(pid, "bob", {6, 0})
+      place(pid, "alice", {-1, 1})
+      place(pid, "bob", {7, 0})
+      place(pid, "alice", {-1, 0})
+      place(pid, "bob", {8, 0})
+      place(pid, "alice", {0, -1})
+      place(pid, "bob", {9, -1})
+      place(pid, "alice", {1, -1})
+
+      {:ok, state} = get_state(pid)
+      assert state.game.phase == :game_over
+      assert state.game.win_reason == :ring
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Per-move timer
+  # ---------------------------------------------------------------------------
+
+  describe "per-move timer" do
+    test "move_deadline is set when game starts (hvh)" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+      {:ok, state} = get_state(pid)
+      assert is_integer(state.move_deadline)
+      assert state.move_deadline > :os.system_time(:millisecond)
+    end
+
+    test "move_deadline is set when human joins (hva)" do
+      pid = start_server(:human_vs_ai)
+      join(pid, "alice")
+      {:ok, state} = get_state(pid)
+      assert is_integer(state.move_deadline)
+    end
+
+    test "move_deadline resets after a valid move" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+      {:ok, before} = get_state(pid)
+      Process.sleep(20)
+      place(pid, "alice", {0, 0})
+      pie_decision(pid, "bob", :keep)
+      {:ok, after_state} = get_state(pid)
+      # New deadline should be later than the original one (reset after bob's turn)
+      assert after_state.move_deadline > before.move_deadline
+    end
+
+    test "move_deadline is nil after game over by resign" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+      resign(pid, "alice")
+      {:ok, state} = get_state(pid)
+      assert is_nil(state.move_deadline)
+    end
+
+    test "timeout causes game over with :timeout win reason" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+
+      # Manually fire the timeout message, simulating timer expiry
+      send(pid, :move_timeout)
+      Process.sleep(50)
+
+      {:ok, state} = get_state(pid)
+      assert state.game.phase == :game_over
+      assert state.game.win_reason == :timeout
+      # The current player (alice/player_1) loses; player_2 wins
+      assert state.game.winner == :red
+    end
+
+    test "timeout is ignored once game is already over" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+      resign(pid, "alice")
+
+      send(pid, :move_timeout)
+      Process.sleep(50)
+
+      {:ok, state} = get_state(pid)
+      assert state.game.win_reason == :resignation
     end
   end
 end

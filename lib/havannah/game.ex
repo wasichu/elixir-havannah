@@ -4,17 +4,18 @@ defmodule Havannah.Game do
 
   The board stores side ownership (:blue or :red), decoupled from player
   identity. Players are mapped to sides via the `sides` field. This design
-  supports a future pie rule where the second player can swap sides after
-  the first move, without changing board state.
+  supports the pie rule where the second player can swap sides after the first
+  move without changing board state.
   """
 
   alias Havannah.{Board, Rules}
 
   @enforce_keys [:board, :players, :sides, :current_player, :phase]
-  defstruct [:board, :players, :sides, :current_player, :phase, :last_move, :winner]
+  defstruct [:board, :players, :sides, :current_player, :phase, :last_move, :winner, :win_reason]
 
   @type side :: :blue | :red
   @type player :: any()
+  @type win_reason :: :bridge | :fork | :ring | :resignation | :timeout
   @type t :: %__MODULE__{
           board: %{{integer(), integer()} => side() | nil},
           players: [player()],
@@ -22,7 +23,8 @@ defmodule Havannah.Game do
           current_player: player(),
           phase: :opening | :pie_decision | :playing | :game_over,
           last_move: {integer(), integer()} | nil,
-          winner: side() | nil
+          winner: side() | nil,
+          win_reason: win_reason() | nil
         }
 
   @doc """
@@ -37,7 +39,8 @@ defmodule Havannah.Game do
       current_player: player_a,
       phase: :opening,
       last_move: nil,
-      winner: nil
+      winner: nil,
+      win_reason: nil
     }
   end
 
@@ -80,8 +83,16 @@ defmodule Havannah.Game do
                  phase: next_phase
              }}
 
-          _win ->
-            {:ok, %{game | board: new_board, phase: :game_over, winner: side, last_move: {q, r}}}
+          win_reason ->
+            {:ok,
+             %{
+               game
+               | board: new_board,
+                 phase: :game_over,
+                 winner: side,
+                 win_reason: win_reason,
+                 last_move: {q, r}
+             }}
         end
     end
   end
@@ -109,6 +120,20 @@ defmodule Havannah.Game do
 
   def pie_decision(%__MODULE__{}, _choice), do: {:error, :invalid_choice}
 
+  @doc """
+  Resigns the given player. The opposing side wins with reason :resignation.
+  Valid in :opening, :pie_decision, and :playing phases.
+  Returns {:ok, updated_game} | {:error, reason}.
+  """
+  def resign(%__MODULE__{phase: phase} = game, player)
+      when phase in [:opening, :pie_decision, :playing] do
+    loser_side = player_side(game, player)
+    winner_side = other_side(loser_side)
+    {:ok, %{game | phase: :game_over, winner: winner_side, win_reason: :resignation}}
+  end
+
+  def resign(%__MODULE__{}, _), do: {:error, :game_not_playing}
+
   defp swap_sides(%__MODULE__{sides: sides, players: [p1, p2]} = game) do
     %{game | sides: %{p1 => sides[p2], p2 => sides[p1]}}
   end
@@ -116,4 +141,7 @@ defmodule Havannah.Game do
   defp next_player(%__MODULE__{players: [p1, p2], current_player: current}) do
     if current == p1, do: p2, else: p1
   end
+
+  defp other_side(:blue), do: :red
+  defp other_side(:red), do: :blue
 end

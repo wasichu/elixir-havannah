@@ -9,12 +9,14 @@ defmodule Havannah.GameServer do
   Havannah.Game struct uses :player_1 / :player_2 as player identities.
 
   State shape:
-    id          - unique game ID
-    mode        - :human_vs_human | :human_vs_ai
-    game        - %Havannah.Game{}
-    slots       - %{player_1: :open | session_id, player_2: :open | :ai | session_id}
-    assignments - %{session_id => :player_1 | :player_2 | :spectator}
-    status      - :waiting | :playing | :ai_thinking
+    id            - unique game ID
+    mode          - :human_vs_human | :human_vs_ai
+    game          - %Havannah.Game{}
+    slots         - %{player_1: :open | session_id, player_2: :open | :ai | session_id}
+    assignments   - %{session_id => :player_1 | :player_2 | :spectator}
+    status        - :waiting | :playing | :ai_thinking | :game_over
+    timer_ref     - Process.send_after ref for the current move timer, or nil
+    move_deadline - absolute millisecond timestamp when current timer expires, or nil
   """
 
   use GenServer
@@ -22,6 +24,7 @@ defmodule Havannah.GameServer do
   alias Havannah.{AI, Game}
 
   @ai_delay_ms 200..500
+  @move_timeout_ms 5 * 60 * 1000
 
   # ---------------------------------------------------------------------------
   # Public API
@@ -61,6 +64,14 @@ defmodule Havannah.GameServer do
     with_server(game_id, fn pid -> GenServer.call(pid, {:pie_decision, session_id, choice}) end)
   end
 
+  @doc """
+  Resigns on behalf of session_id. The opposing player wins.
+  Returns :ok | {:error, reason}.
+  """
+  def resign(game_id, session_id) do
+    with_server(game_id, fn pid -> GenServer.call(pid, {:resign, session_id}) end)
+  end
+
   @doc "Registration tuple for the Registry."
   def via(game_id) do
     {:via, Registry, {Havannah.GameRegistry, game_id}}
@@ -86,7 +97,9 @@ defmodule Havannah.GameServer do
       game: game,
       slots: slots,
       assignments: %{},
-      status: :waiting
+      status: :waiting,
+      timer_ref: nil,
+      move_deadline: nil
     }
 
     {:ok, state}
@@ -101,7 +114,6 @@ defmodule Havannah.GameServer do
   def handle_call({:join, session_id}, _from, state) do
     cond do
       Map.has_key?(state.assignments, session_id) ->
-        # Already joined; return existing role without mutating state
         {:reply, {:ok, state.assignments[session_id]}, state}
 
       state.slots.player_1 == :open ->
@@ -138,12 +150,16 @@ defmodule Havannah.GameServer do
       true ->
         case Game.place(state.game, cell) do
           {:ok, new_game} ->
+            state = cancel_timer(state)
             state = %{state | game: new_game}
 
             state =
-              if new_game.phase == :game_over, do: %{state | status: :game_over}, else: state
+              if new_game.phase == :game_over do
+                %{state | status: :game_over, move_deadline: nil}
+              else
+                state |> maybe_start_timer() |> maybe_schedule_ai()
+              end
 
-            state = maybe_schedule_ai(state)
             broadcast(state)
             {:reply, :ok, state}
 
@@ -173,8 +189,37 @@ defmodule Havannah.GameServer do
       true ->
         case Game.pie_decision(state.game, choice) do
           {:ok, new_game} ->
+            state = cancel_timer(state)
             state = %{state | game: new_game}
-            state = maybe_schedule_ai(state)
+            state = state |> maybe_start_timer() |> maybe_schedule_ai()
+            broadcast(state)
+            {:reply, :ok, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+    end
+  end
+
+  @impl true
+  def handle_call({:resign, session_id}, _from, state) do
+    role = Map.get(state.assignments, session_id)
+
+    cond do
+      is_nil(role) ->
+        {:reply, {:error, :not_in_game}, state}
+
+      role == :spectator ->
+        {:reply, {:error, :spectator_cannot_resign}, state}
+
+      state.game.phase not in [:opening, :pie_decision, :playing] ->
+        {:reply, {:error, :game_not_playing}, state}
+
+      true ->
+        case Game.resign(state.game, role) do
+          {:ok, new_game} ->
+            state = cancel_timer(state)
+            state = %{state | game: new_game, status: :game_over, move_deadline: nil}
             broadcast(state)
             {:reply, :ok, state}
 
@@ -191,8 +236,9 @@ defmodule Havannah.GameServer do
           state.game.current_player == :player_2 ->
         choice = Enum.random([:swap, :keep])
         {:ok, new_game} = Game.pie_decision(state.game, choice)
+        state = cancel_timer(state)
         state = %{state | game: new_game, status: :playing}
-        state = maybe_schedule_ai(state)
+        state = state |> maybe_start_timer() |> maybe_schedule_ai()
         broadcast(state)
         {:noreply, state}
 
@@ -201,8 +247,16 @@ defmodule Havannah.GameServer do
         case AI.random_move(state.game) do
           {:ok, cell} ->
             {:ok, new_game} = Game.place(state.game, cell)
-            new_status = if new_game.phase == :game_over, do: :game_over, else: :playing
-            state = %{state | game: new_game, status: new_status}
+            state = cancel_timer(state)
+
+            state =
+              if new_game.phase == :game_over do
+                %{state | game: new_game, status: :game_over, move_deadline: nil}
+              else
+                state = %{state | game: new_game, status: :playing}
+                maybe_start_timer(state)
+              end
+
             broadcast(state)
             {:noreply, state}
 
@@ -215,6 +269,20 @@ defmodule Havannah.GameServer do
     end
   end
 
+  @impl true
+  def handle_info(:move_timeout, state) do
+    if state.game.phase in [:opening, :pie_decision, :playing] do
+      loser_side = Game.player_side(state.game, state.game.current_player)
+      winner_side = other_side(loser_side)
+      new_game = %{state.game | phase: :game_over, winner: winner_side, win_reason: :timeout}
+      state = %{state | game: new_game, status: :game_over, timer_ref: nil, move_deadline: nil}
+      broadcast(state)
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
@@ -224,6 +292,7 @@ defmodule Havannah.GameServer do
     |> put_in([:slots, role], session_id)
     |> put_in([:assignments, session_id], role)
     |> update_status()
+    |> maybe_start_timer()
     |> tap(&broadcast/1)
   end
 
@@ -237,6 +306,35 @@ defmodule Havannah.GameServer do
     if ready, do: %{state | status: :playing}, else: state
   end
 
+  defp maybe_start_timer(%{status: :playing} = state) do
+    state = cancel_timer(state)
+
+    if human_turn?(state) do
+      ref = Process.send_after(self(), :move_timeout, @move_timeout_ms)
+      deadline = :os.system_time(:millisecond) + @move_timeout_ms
+      %{state | timer_ref: ref, move_deadline: deadline}
+    else
+      %{state | timer_ref: nil, move_deadline: nil}
+    end
+  end
+
+  defp maybe_start_timer(state), do: state
+
+  defp human_turn?(%{game: game, mode: mode}) do
+    game.phase in [:opening, :pie_decision, :playing] and
+      case mode do
+        :human_vs_human -> true
+        :human_vs_ai -> game.current_player == :player_1
+      end
+  end
+
+  defp cancel_timer(%{timer_ref: ref} = state) when not is_nil(ref) do
+    Process.cancel_timer(ref)
+    %{state | timer_ref: nil}
+  end
+
+  defp cancel_timer(state), do: state
+
   defp maybe_schedule_ai(%{mode: :human_vs_ai, game: game} = state)
        when game.current_player == :player_2 and game.phase in [:pie_decision, :playing] do
     Process.send_after(self(), :ai_move, Enum.random(@ai_delay_ms))
@@ -244,6 +342,9 @@ defmodule Havannah.GameServer do
   end
 
   defp maybe_schedule_ai(state), do: state
+
+  defp other_side(:blue), do: :red
+  defp other_side(:red), do: :blue
 
   defp broadcast(state) do
     Phoenix.PubSub.broadcast(
@@ -259,7 +360,8 @@ defmodule Havannah.GameServer do
       mode: state.mode,
       game: state.game,
       slots: state.slots,
-      status: state.status
+      status: state.status,
+      move_deadline: state.move_deadline
     }
   end
 

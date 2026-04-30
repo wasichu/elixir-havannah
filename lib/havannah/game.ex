@@ -8,10 +8,10 @@ defmodule Havannah.Game do
   the first move, without changing board state.
   """
 
-  alias Havannah.Board
+  alias Havannah.{Board, Rules}
 
   @enforce_keys [:board, :players, :sides, :current_player, :phase]
-  defstruct [:board, :players, :sides, :current_player, :phase, :last_move]
+  defstruct [:board, :players, :sides, :current_player, :phase, :last_move, :winner]
 
   @type side :: :blue | :red
   @type player :: any()
@@ -20,8 +20,9 @@ defmodule Havannah.Game do
           players: [player()],
           sides: %{player() => side()},
           current_player: player(),
-          phase: :playing,
-          last_move: {integer(), integer()} | nil
+          phase: :playing | :game_over,
+          last_move: {integer(), integer()} | nil,
+          winner: side() | nil
         }
 
   @doc """
@@ -35,7 +36,8 @@ defmodule Havannah.Game do
       sides: %{player_a => :blue, player_b => :red},
       current_player: player_a,
       phase: :playing,
-      last_move: nil
+      last_move: nil,
+      winner: nil
     }
   end
 
@@ -47,6 +49,10 @@ defmodule Havannah.Game do
   @doc """
   Places a stone for the current player on cell {q, r}.
   Returns {:ok, updated_game} | {:error, reason}.
+
+  After a successful placement, win conditions are evaluated. If the current
+  player wins, the game transitions to :game_over and no further moves are
+  accepted.
   """
   def place(%__MODULE__{phase: :playing} = game, {q, r}) do
     cond do
@@ -59,8 +65,15 @@ defmodule Havannah.Game do
       true ->
         side = player_side(game, game.current_player)
         new_board = Map.put(game.board, {q, r}, side)
-        next = next_player(game)
-        {:ok, %{game | board: new_board, current_player: next, last_move: {q, r}}}
+
+        case Rules.check_win(new_board, side) do
+          :none ->
+            next = next_player(game)
+            {:ok, %{game | board: new_board, current_player: next, last_move: {q, r}}}
+
+          _win ->
+            {:ok, %{game | board: new_board, phase: :game_over, winner: side, last_move: {q, r}}}
+        end
     end
   end
 

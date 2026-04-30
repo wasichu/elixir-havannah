@@ -91,4 +91,82 @@ defmodule Havannah.GameTest do
       assert game.board[{-9, 9}] == :red
     end
   end
+
+  describe "win detection" do
+    test "game starts in :playing phase with no winner", %{game: game} do
+      assert game.phase == :playing
+      assert is_nil(game.winner)
+    end
+
+    test "bridge win transitions to :game_over and records winner" do
+      game = Game.new(:player_1, :player_2)
+      # Blue builds a bridge along edge 1 (q+r=9): 10 cells from {0,9} to {9,0}
+      bridge_path = for q <- 0..9, do: {q, 9 - q}
+      # Red plays 9 harmless moves (game ends after blue's 10th placement)
+      red_cells = [{-1, -1}, {-2, -1}, {-3, -1}, {-4, -1}, {-5, -1}, {-1, -2}, {-2, -2}, {-3, -2}, {-4, -2}]
+
+      game =
+        Enum.zip_with(bridge_path, red_cells ++ [nil], fn blue_cell, red_cell ->
+          {blue_cell, red_cell}
+        end)
+        |> Enum.reduce(game, fn {blue_cell, red_cell}, g ->
+          {:ok, g} = Game.place(g, blue_cell)
+
+          if g.phase == :playing and red_cell do
+            {:ok, g} = Game.place(g, red_cell)
+            g
+          else
+            g
+          end
+        end)
+
+      assert game.phase == :game_over
+      assert game.winner == :blue
+    end
+
+    test "after game over, further placements are rejected" do
+      game = Game.new(:player_1, :player_2)
+      ring = [{1, 0}, {0, 1}, {-1, 1}, {-1, 0}, {0, -1}, {1, -1}]
+      # Red plays 5 harmless moves while blue builds the ring; game ends on blue's 6th
+      red_cells = [{5, 0}, {6, 0}, {7, 0}, {8, 0}, {9, -1}]
+
+      game =
+        Enum.zip_with(ring, red_cells ++ [nil], fn b, r -> {b, r} end)
+        |> Enum.reduce(game, fn {blue_cell, red_cell}, g ->
+          {:ok, g} = Game.place(g, blue_cell)
+
+          if g.phase == :playing and red_cell do
+            {:ok, g} = Game.place(g, red_cell)
+            g
+          else
+            g
+          end
+        end)
+
+      assert game.phase == :game_over
+      assert {:error, :game_not_playing} = Game.place(game, {0, 0})
+    end
+
+    test "ring win: blue enclosing the center wins" do
+      game = Game.new(:player_1, :player_2)
+      ring = [{1, 0}, {0, 1}, {-1, 1}, {-1, 0}, {0, -1}, {1, -1}]
+      red_cells = [{5, 0}, {6, 0}, {7, 0}, {8, 0}, {9, -1}]
+
+      game =
+        Enum.zip_with(ring, red_cells ++ [nil], fn b, r -> {b, r} end)
+        |> Enum.reduce(game, fn {blue_cell, red_cell}, g ->
+          {:ok, g} = Game.place(g, blue_cell)
+
+          if g.phase == :playing and red_cell do
+            {:ok, g} = Game.place(g, red_cell)
+            g
+          else
+            g
+          end
+        end)
+
+      assert game.phase == :game_over
+      assert game.winner == :blue
+    end
+  end
 end

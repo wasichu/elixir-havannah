@@ -223,6 +223,7 @@ defmodule HavannahWeb.GameLive do
     is_nil(cell.side) and
       role in [:player_1, :player_2] and
       gs.status == :playing and
+      gs.game.phase == :playing and
       gs.game.current_player == role
   end
 
@@ -236,6 +237,12 @@ defmodule HavannahWeb.GameLive do
 
   defp status_text(%{game_state: %{status: :ai_thinking}} = _assigns) do
     "AI is thinking…"
+  end
+
+  defp status_text(%{game_state: %{status: :game_over} = gs} = _assigns) do
+    winner_side = gs.game.winner
+    winner_player = Enum.find_value(gs.game.sides, fn {p, s} -> if s == winner_side, do: p end)
+    "#{player_label(winner_player, gs)} wins! (#{side_label(winner_side)})"
   end
 
   defp status_text(%{role: role, game_state: gs} = _assigns) do

@@ -131,6 +131,7 @@ defmodule Havannah.GameServer do
         case Game.place(state.game, cell) do
           {:ok, new_game} ->
             state = %{state | game: new_game}
+            state = if new_game.phase == :game_over, do: %{state | status: :game_over}, else: state
             state = maybe_schedule_ai(state)
             broadcast(state)
             {:reply, :ok, state}
@@ -143,12 +144,14 @@ defmodule Havannah.GameServer do
 
   @impl true
   def handle_info(:ai_move, state) do
-    # Guard: only act if it is still the AI's turn
-    if state.status == :ai_thinking and state.game.current_player == :player_2 do
+    # Guard: only act if it is still the AI's turn and the game is still in progress
+    if state.status == :ai_thinking and state.game.current_player == :player_2 and
+         state.game.phase == :playing do
       case AI.random_move(state.game) do
         {:ok, cell} ->
           {:ok, new_game} = Game.place(state.game, cell)
-          state = %{state | game: new_game, status: :playing}
+          new_status = if new_game.phase == :game_over, do: :game_over, else: :playing
+          state = %{state | game: new_game, status: new_status}
           broadcast(state)
           {:noreply, state}
 
@@ -183,7 +186,7 @@ defmodule Havannah.GameServer do
   end
 
   defp maybe_schedule_ai(%{mode: :human_vs_ai, game: game} = state)
-       when game.current_player == :player_2 do
+       when game.current_player == :player_2 and game.phase == :playing do
     Process.send_after(self(), :ai_move, Enum.random(@ai_delay_ms))
     %{state | status: :ai_thinking}
   end

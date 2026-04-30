@@ -167,8 +167,8 @@ defmodule HavannahWeb.GameLive do
           <%= if @role do %>
             <span class={[
               "badge badge-sm",
-              @role == :player_1 && "badge-info",
-              @role == :player_2 && "badge-error",
+              Game.player_side(@game_state.game, @role) == :blue && "badge-info",
+              Game.player_side(@game_state.game, @role) == :red && "badge-error",
               @role == :spectator && "badge-ghost"
             ]}>
               {role_label(@role, @game_state)}

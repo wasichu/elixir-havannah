@@ -59,6 +59,12 @@ defmodule HavannahWeb.GameLive do
     {:noreply, socket}
   end
 
+  def handle_event("pie_decision", %{"choice" => choice}, socket) do
+    choice_atom = String.to_existing_atom(choice)
+    GameServer.pie_decision(socket.assigns.game_id, socket.assigns.session_id, choice_atom)
+    {:noreply, socket}
+  end
+
   def handle_event("new_game", _params, socket) do
     mode = socket.assigns.game_state.mode
     {:ok, game_id} = GameSupervisor.start_game(mode)
@@ -156,6 +162,39 @@ defmodule HavannahWeb.GameLive do
           <% end %>
         </div>
 
+        <%!-- Pie rule decision prompt --%>
+        <%= if @game_state.game.phase == :pie_decision and @role == :player_2 do %>
+          <div
+            id="pie-decision"
+            class="w-full rounded-xl border border-amber-400/40 bg-amber-50/10 p-4 text-center"
+          >
+            <p class="mb-1 text-sm font-semibold text-base-content">
+              Pie Rule — Do you want to swap sides?
+            </p>
+            <p class="mb-3 text-xs text-base-content/50">
+              Blue made the first move. Swap to take their side, or keep yours.
+            </p>
+            <div class="flex justify-center gap-3">
+              <button
+                id="pie-swap"
+                phx-click="pie_decision"
+                phx-value-choice="swap"
+                class="btn btn-sm btn-warning"
+              >
+                Swap
+              </button>
+              <button
+                id="pie-keep"
+                phx-click="pie_decision"
+                phx-value-choice="keep"
+                class="btn btn-sm btn-ghost"
+              >
+                Keep
+              </button>
+            </div>
+          </div>
+        <% end %>
+
         <%!-- Board --%>
         <div class="w-full overflow-x-auto">
           <svg
@@ -223,7 +262,7 @@ defmodule HavannahWeb.GameLive do
     is_nil(cell.side) and
       role in [:player_1, :player_2] and
       gs.status == :playing and
-      gs.game.phase == :playing and
+      gs.game.phase in [:opening, :playing] and
       gs.game.current_player == role
   end
 
@@ -243,6 +282,16 @@ defmodule HavannahWeb.GameLive do
     winner_side = gs.game.winner
     winner_player = Enum.find_value(gs.game.sides, fn {p, s} -> if s == winner_side, do: p end)
     "#{player_label(winner_player, gs)} wins! (#{side_label(winner_side)})"
+  end
+
+  defp status_text(%{role: role, game_state: %{game: %{phase: :pie_decision}} = gs} = _assigns) do
+    current = gs.game.current_player
+
+    if role == current do
+      "Your turn — swap sides or keep?"
+    else
+      "#{player_label(current, gs)} is deciding on the pie rule…"
+    end
   end
 
   defp status_text(%{role: role, game_state: gs} = _assigns) do
@@ -271,8 +320,10 @@ defmodule HavannahWeb.GameLive do
     "#{name} — #{side_label(side)}"
   end
 
-  defp role_label(:player_1, _gs), do: "You are Player 1 (Blue)"
-  defp role_label(:player_2, %{mode: :human_vs_ai}), do: "You are Player 1 (Blue)"
+  defp role_label(:player_1, gs) do
+    side = Game.player_side(gs.game, :player_1)
+    "You are Player 1 (#{side_label(side)})"
+  end
 
   defp role_label(:player_2, gs) do
     side = Game.player_side(gs.game, :player_2)

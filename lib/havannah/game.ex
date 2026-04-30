@@ -20,7 +20,7 @@ defmodule Havannah.Game do
           players: [player()],
           sides: %{player() => side()},
           current_player: player(),
-          phase: :playing | :game_over,
+          phase: :opening | :pie_decision | :playing | :game_over,
           last_move: {integer(), integer()} | nil,
           winner: side() | nil
         }
@@ -35,7 +35,7 @@ defmodule Havannah.Game do
       players: [player_a, player_b],
       sides: %{player_a => :blue, player_b => :red},
       current_player: player_a,
-      phase: :playing,
+      phase: :opening,
       last_move: nil,
       winner: nil
     }
@@ -50,11 +50,11 @@ defmodule Havannah.Game do
   Places a stone for the current player on cell {q, r}.
   Returns {:ok, updated_game} | {:error, reason}.
 
-  After a successful placement, win conditions are evaluated. If the current
-  player wins, the game transitions to :game_over and no further moves are
-  accepted.
+  Valid in :opening and :playing phases. After a successful placement in
+  :opening, the game transitions to :pie_decision. Win conditions are
+  evaluated after every placement.
   """
-  def place(%__MODULE__{phase: :playing} = game, {q, r}) do
+  def place(%__MODULE__{phase: phase} = game, {q, r}) when phase in [:opening, :playing] do
     cond do
       not Board.valid?({q, r}) ->
         {:error, :invalid_cell}
@@ -69,7 +69,16 @@ defmodule Havannah.Game do
         case Rules.check_win(new_board, side) do
           :none ->
             next = next_player(game)
-            {:ok, %{game | board: new_board, current_player: next, last_move: {q, r}}}
+            next_phase = if phase == :opening, do: :pie_decision, else: :playing
+
+            {:ok,
+             %{
+               game
+               | board: new_board,
+                 current_player: next,
+                 last_move: {q, r},
+                 phase: next_phase
+             }}
 
           _win ->
             {:ok, %{game | board: new_board, phase: :game_over, winner: side, last_move: {q, r}}}
@@ -78,6 +87,30 @@ defmodule Havannah.Game do
   end
 
   def place(%__MODULE__{}, _), do: {:error, :game_not_playing}
+
+  @doc """
+  Records the second player's pie rule decision after the first move.
+  choice must be :swap or :keep.
+
+  :swap exchanges the player-to-side mapping; the board is unchanged.
+  :keep continues with the existing assignment.
+
+  Returns {:ok, updated_game} | {:error, reason}.
+  """
+  def pie_decision(%__MODULE__{phase: :pie_decision} = game, choice)
+      when choice in [:swap, :keep] do
+    game = if choice == :swap, do: swap_sides(game), else: game
+    {:ok, %{game | phase: :playing}}
+  end
+
+  def pie_decision(%__MODULE__{phase: phase}, _choice) when phase != :pie_decision,
+    do: {:error, :invalid_phase}
+
+  def pie_decision(%__MODULE__{}, _choice), do: {:error, :invalid_choice}
+
+  defp swap_sides(%__MODULE__{sides: sides, players: [p1, p2]} = game) do
+    %{game | sides: %{p1 => sides[p2], p2 => sides[p1]}}
+  end
 
   defp next_player(%__MODULE__{players: [p1, p2], current_player: current}) do
     if current == p1, do: p2, else: p1

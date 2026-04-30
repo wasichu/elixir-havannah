@@ -8,8 +8,8 @@ defmodule Havannah.GameTest do
   end
 
   describe "new/2" do
-    test "creates a game in :playing phase", %{game: game} do
-      assert game.phase == :playing
+    test "creates a game in :opening phase", %{game: game} do
+      assert game.phase == :opening
     end
 
     test "player_1 goes first", %{game: game} do
@@ -33,14 +33,30 @@ defmodule Havannah.GameTest do
     end
   end
 
+  # Helper: fast-forward through the pie decision with :keep so tests can
+  # reach :playing phase without caring about the pie rule.
+  defp skip_pie({:ok, game}) do
+    if game.phase == :pie_decision, do: Game.pie_decision(game, :keep), else: {:ok, game}
+  end
+
   describe "place/2" do
     test "places a blue stone for player_1", %{game: game} do
       {:ok, new_game} = Game.place(game, {0, 0})
       assert new_game.board[{0, 0}] == :blue
     end
 
-    test "places a red stone for player_2", %{game: game} do
+    test "first move transitions to :pie_decision", %{game: game} do
+      {:ok, new_game} = Game.place(game, {0, 0})
+      assert new_game.phase == :pie_decision
+    end
+
+    test "returns :game_not_playing when trying to place during :pie_decision", %{game: game} do
       {:ok, game} = Game.place(game, {0, 0})
+      assert {:error, :game_not_playing} = Game.place(game, {1, 0})
+    end
+
+    test "places a red stone for player_2 after pie decision", %{game: game} do
+      {:ok, game} = Game.place(game, {0, 0}) |> skip_pie()
       {:ok, game} = Game.place(game, {1, 0})
       assert game.board[{1, 0}] == :red
     end
@@ -49,6 +65,10 @@ defmodule Havannah.GameTest do
       assert game.current_player == :player_1
 
       {:ok, game} = Game.place(game, {0, 0})
+      assert game.current_player == :player_2
+      assert game.phase == :pie_decision
+
+      {:ok, game} = Game.pie_decision(game, :keep)
       assert game.current_player == :player_2
 
       {:ok, game} = Game.place(game, {1, 0})
@@ -61,13 +81,14 @@ defmodule Havannah.GameTest do
     end
 
     test "last_move updates on each placement", %{game: game} do
-      {:ok, game} = Game.place(game, {0, 0})
+      {:ok, game} = Game.place(game, {0, 0}) |> skip_pie()
       {:ok, game} = Game.place(game, {3, -2})
       assert game.last_move == {3, -2}
     end
 
     test "returns :cell_occupied error when cell is taken", %{game: game} do
-      {:ok, game} = Game.place(game, {0, 0})
+      {:ok, game} = Game.place(game, {0, 0}) |> skip_pie()
+      {:ok, game} = Game.place(game, {1, 0}) |> skip_pie()
       assert {:error, :cell_occupied} = Game.place(game, {0, 0})
     end
 
@@ -78,13 +99,14 @@ defmodule Havannah.GameTest do
     end
 
     test "occupied cell does not change owner after failed placement", %{game: game} do
-      {:ok, game} = Game.place(game, {0, 0})
+      {:ok, game} = Game.place(game, {0, 0}) |> skip_pie()
+      {:ok, game} = Game.place(game, {1, 0}) |> skip_pie()
       {:error, _} = Game.place(game, {0, 0})
       assert game.board[{0, 0}] == :blue
     end
 
     test "can place on any valid board cell", %{game: game} do
-      {:ok, game} = Game.place(game, {9, 0})
+      {:ok, game} = Game.place(game, {9, 0}) |> skip_pie()
       assert game.board[{9, 0}] == :blue
 
       {:ok, game} = Game.place(game, {-9, 9})
@@ -92,9 +114,54 @@ defmodule Havannah.GameTest do
     end
   end
 
+  describe "pie_decision/2" do
+    setup %{game: game} do
+      {:ok, game} = Game.place(game, {0, 0})
+      {:ok, game: game}
+    end
+
+    test "returns :invalid_phase when not in :pie_decision", %{} do
+      fresh = Game.new(:player_1, :player_2)
+      assert {:error, :invalid_phase} = Game.pie_decision(fresh, :keep)
+    end
+
+    test ":keep transitions to :playing without changing sides", %{game: game} do
+      {:ok, new_game} = Game.pie_decision(game, :keep)
+      assert new_game.phase == :playing
+      assert new_game.sides == game.sides
+    end
+
+    test ":swap transitions to :playing and exchanges side assignments", %{game: game} do
+      {:ok, new_game} = Game.pie_decision(game, :swap)
+      assert new_game.phase == :playing
+      assert new_game.sides[:player_1] == :red
+      assert new_game.sides[:player_2] == :blue
+    end
+
+    test ":swap does not modify the board", %{game: game} do
+      {:ok, new_game} = Game.pie_decision(game, :swap)
+      assert new_game.board == game.board
+    end
+
+    test "current_player stays as player_2 after :keep", %{game: game} do
+      {:ok, new_game} = Game.pie_decision(game, :keep)
+      assert new_game.current_player == :player_2
+    end
+
+    test "current_player stays as player_2 after :swap", %{game: game} do
+      {:ok, new_game} = Game.pie_decision(game, :swap)
+      assert new_game.current_player == :player_2
+    end
+
+    test "cannot make pie decision twice", %{game: game} do
+      {:ok, game} = Game.pie_decision(game, :keep)
+      assert {:error, :invalid_phase} = Game.pie_decision(game, :keep)
+    end
+  end
+
   describe "win detection" do
-    test "game starts in :playing phase with no winner", %{game: game} do
-      assert game.phase == :playing
+    test "game starts in :opening phase with no winner", %{game: game} do
+      assert game.phase == :opening
       assert is_nil(game.winner)
     end
 
@@ -103,7 +170,17 @@ defmodule Havannah.GameTest do
       # Blue builds a bridge along edge 1 (q+r=9): 10 cells from {0,9} to {9,0}
       bridge_path = for q <- 0..9, do: {q, 9 - q}
       # Red plays 9 harmless moves (game ends after blue's 10th placement)
-      red_cells = [{-1, -1}, {-2, -1}, {-3, -1}, {-4, -1}, {-5, -1}, {-1, -2}, {-2, -2}, {-3, -2}, {-4, -2}]
+      red_cells = [
+        {-1, -1},
+        {-2, -1},
+        {-3, -1},
+        {-4, -1},
+        {-5, -1},
+        {-1, -2},
+        {-2, -2},
+        {-3, -2},
+        {-4, -2}
+      ]
 
       game =
         Enum.zip_with(bridge_path, red_cells ++ [nil], fn blue_cell, red_cell ->
@@ -111,6 +188,7 @@ defmodule Havannah.GameTest do
         end)
         |> Enum.reduce(game, fn {blue_cell, red_cell}, g ->
           {:ok, g} = Game.place(g, blue_cell)
+          {:ok, g} = if g.phase == :pie_decision, do: Game.pie_decision(g, :keep), else: {:ok, g}
 
           if g.phase == :playing and red_cell do
             {:ok, g} = Game.place(g, red_cell)
@@ -134,6 +212,7 @@ defmodule Havannah.GameTest do
         Enum.zip_with(ring, red_cells ++ [nil], fn b, r -> {b, r} end)
         |> Enum.reduce(game, fn {blue_cell, red_cell}, g ->
           {:ok, g} = Game.place(g, blue_cell)
+          {:ok, g} = if g.phase == :pie_decision, do: Game.pie_decision(g, :keep), else: {:ok, g}
 
           if g.phase == :playing and red_cell do
             {:ok, g} = Game.place(g, red_cell)
@@ -156,6 +235,7 @@ defmodule Havannah.GameTest do
         Enum.zip_with(ring, red_cells ++ [nil], fn b, r -> {b, r} end)
         |> Enum.reduce(game, fn {blue_cell, red_cell}, g ->
           {:ok, g} = Game.place(g, blue_cell)
+          {:ok, g} = if g.phase == :pie_decision, do: Game.pie_decision(g, :keep), else: {:ok, g}
 
           if g.phase == :playing and red_cell do
             {:ok, g} = Game.place(g, red_cell)

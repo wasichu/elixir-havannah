@@ -28,6 +28,7 @@ defmodule Havannah.AITest do
       game = Game.new(:player_1, :player_2)
       # Place a few stones so the board is partially filled
       {:ok, game} = Game.place(game, {0, 0})
+      {:ok, game} = Game.pie_decision(game, :keep)
       {:ok, game} = Game.place(game, {1, 0})
       {:ok, game} = Game.place(game, {0, 1})
 

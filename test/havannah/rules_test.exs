@@ -230,10 +230,18 @@ defmodule Havannah.RulesTest do
       # Larger ring — encloses several empty cells
       # Ring of radius-2 hex: the 12 cells surrounding the inner hex of 7
       outer_ring = [
-        {2, 0}, {2, -1}, {2, -2},
-        {1, -2}, {0, -2}, {-1, -1},
-        {-2, 0}, {-2, 1}, {-2, 2},
-        {-1, 2}, {0, 2}, {1, 1}
+        {2, 0},
+        {2, -1},
+        {2, -2},
+        {1, -2},
+        {0, -2},
+        {-1, -1},
+        {-2, 0},
+        {-2, 1},
+        {-2, 2},
+        {-1, 2},
+        {0, 2},
+        {1, 1}
       ]
 
       board = put_stones(empty_board(), :blue, outer_ring)

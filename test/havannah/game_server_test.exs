@@ -16,6 +16,9 @@ defmodule Havannah.GameServerTest do
   defp join(pid, session_id), do: GenServer.call(pid, {:join, session_id})
   defp place(pid, session_id, cell), do: GenServer.call(pid, {:place, session_id, cell})
 
+  defp pie_decision(pid, session_id, choice),
+    do: GenServer.call(pid, {:pie_decision, session_id, choice})
+
   # ---------------------------------------------------------------------------
   # Creating a game
   # ---------------------------------------------------------------------------
@@ -117,6 +120,7 @@ defmodule Havannah.GameServerTest do
 
     test "turns alternate: p1 → p2 → p1", %{pid: pid} do
       assert :ok = place(pid, "alice", {0, 0})
+      assert :ok = pie_decision(pid, "bob", :keep)
       assert :ok = place(pid, "bob", {1, 0})
       assert :ok = place(pid, "alice", {0, 1})
     end
@@ -145,6 +149,7 @@ defmodule Havannah.GameServerTest do
 
     test "rejects placement on occupied cell", %{pid: pid} do
       place(pid, "alice", {0, 0})
+      pie_decision(pid, "bob", :keep)
       place(pid, "bob", {1, 0})
       # alice tries bob's cell
       assert {:error, :cell_occupied} = place(pid, "alice", {1, 0})
@@ -191,6 +196,128 @@ defmodule Havannah.GameServerTest do
     test "player_2 is assigned :red side", %{pid: pid} do
       {:ok, state} = get_state(pid)
       assert Havannah.Game.player_side(state.game, :player_2) == :red
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Pie rule
+  # ---------------------------------------------------------------------------
+
+  describe "phase transitions" do
+    setup do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+      {:ok, pid: pid}
+    end
+
+    test "game starts in :opening phase", %{pid: pid} do
+      {:ok, state} = get_state(pid)
+      assert state.game.phase == :opening
+    end
+
+    test "first move transitions to :pie_decision", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      {:ok, state} = get_state(pid)
+      assert state.game.phase == :pie_decision
+    end
+
+    test ":keep transitions to :playing without swapping sides", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      pie_decision(pid, "bob", :keep)
+      {:ok, state} = get_state(pid)
+      assert state.game.phase == :playing
+      assert Havannah.Game.player_side(state.game, :player_1) == :blue
+      assert Havannah.Game.player_side(state.game, :player_2) == :red
+    end
+
+    test ":swap transitions to :playing and exchanges side assignments", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      pie_decision(pid, "bob", :swap)
+      {:ok, state} = get_state(pid)
+      assert state.game.phase == :playing
+      assert Havannah.Game.player_side(state.game, :player_1) == :red
+      assert Havannah.Game.player_side(state.game, :player_2) == :blue
+    end
+
+    test ":swap does not modify the board", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      {:ok, before} = get_state(pid)
+      pie_decision(pid, "bob", :swap)
+      {:ok, after_state} = get_state(pid)
+      assert after_state.game.board == before.game.board
+    end
+
+    test "player_2 moves next after pie decision", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      pie_decision(pid, "bob", :keep)
+      {:ok, state} = get_state(pid)
+      assert state.game.current_player == :player_2
+    end
+  end
+
+  describe "pie rule validation" do
+    setup do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+      {:ok, pid: pid}
+    end
+
+    test "player_1 cannot make the pie decision", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      assert {:error, :not_your_turn} = pie_decision(pid, "alice", :keep)
+    end
+
+    test "spectator cannot make the pie decision", %{pid: pid} do
+      join(pid, "carol")
+      place(pid, "alice", {0, 0})
+      assert {:error, :spectator_cannot_decide} = pie_decision(pid, "carol", :keep)
+    end
+
+    test "pie decision outside :pie_decision phase is rejected", %{pid: pid} do
+      assert {:error, :invalid_phase} = pie_decision(pid, "bob", :keep)
+    end
+
+    test "cannot make pie decision twice", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      pie_decision(pid, "bob", :keep)
+      assert {:error, :invalid_phase} = pie_decision(pid, "bob", :keep)
+    end
+
+    test "cannot place a stone during :pie_decision phase", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      assert {:error, :game_not_playing} = place(pid, "bob", {1, 0})
+    end
+  end
+
+  describe "AI pie decision (human_vs_ai)" do
+    test "AI automatically makes pie decision after first human move" do
+      pid = start_server(:human_vs_ai)
+      join(pid, "alice")
+
+      # Alice makes the first move
+      assert :ok = place(pid, "alice", {0, 0})
+
+      # Wait for AI to decide (delay is 200–500ms)
+      Process.sleep(700)
+
+      {:ok, state} = get_state(pid)
+      assert state.game.phase in [:playing, :game_over]
+    end
+
+    test "game reaches :playing after AI pie decision and AI move" do
+      pid = start_server(:human_vs_ai)
+      join(pid, "alice")
+
+      assert :ok = place(pid, "alice", {0, 0})
+
+      # Wait for AI pie decision + AI first move
+      Process.sleep(1200)
+
+      {:ok, state} = get_state(pid)
+      # It's alice's turn again after AI decided and moved
+      assert state.game.current_player == :player_1
     end
   end
 end

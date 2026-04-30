@@ -53,6 +53,14 @@ defmodule Havannah.GameServer do
     with_server(game_id, fn pid -> GenServer.call(pid, {:place, session_id, cell}) end)
   end
 
+  @doc """
+  Records the second player's pie rule decision (:swap or :keep).
+  Returns :ok | {:error, reason}.
+  """
+  def pie_decision(game_id, session_id, choice) do
+    with_server(game_id, fn pid -> GenServer.call(pid, {:pie_decision, session_id, choice}) end)
+  end
+
   @doc "Registration tuple for the Registry."
   def via(game_id) do
     {:via, Registry, {Havannah.GameRegistry, game_id}}
@@ -131,7 +139,41 @@ defmodule Havannah.GameServer do
         case Game.place(state.game, cell) do
           {:ok, new_game} ->
             state = %{state | game: new_game}
-            state = if new_game.phase == :game_over, do: %{state | status: :game_over}, else: state
+
+            state =
+              if new_game.phase == :game_over, do: %{state | status: :game_over}, else: state
+
+            state = maybe_schedule_ai(state)
+            broadcast(state)
+            {:reply, :ok, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+    end
+  end
+
+  @impl true
+  def handle_call({:pie_decision, session_id, choice}, _from, state) do
+    role = Map.get(state.assignments, session_id)
+
+    cond do
+      is_nil(role) ->
+        {:reply, {:error, :not_in_game}, state}
+
+      role == :spectator ->
+        {:reply, {:error, :spectator_cannot_decide}, state}
+
+      state.game.phase != :pie_decision ->
+        {:reply, {:error, :invalid_phase}, state}
+
+      state.game.current_player != role ->
+        {:reply, {:error, :not_your_turn}, state}
+
+      true ->
+        case Game.pie_decision(state.game, choice) do
+          {:ok, new_game} ->
+            state = %{state | game: new_game}
             state = maybe_schedule_ai(state)
             broadcast(state)
             {:reply, :ok, state}
@@ -144,22 +186,32 @@ defmodule Havannah.GameServer do
 
   @impl true
   def handle_info(:ai_move, state) do
-    # Guard: only act if it is still the AI's turn and the game is still in progress
-    if state.status == :ai_thinking and state.game.current_player == :player_2 and
-         state.game.phase == :playing do
-      case AI.random_move(state.game) do
-        {:ok, cell} ->
-          {:ok, new_game} = Game.place(state.game, cell)
-          new_status = if new_game.phase == :game_over, do: :game_over, else: :playing
-          state = %{state | game: new_game, status: new_status}
-          broadcast(state)
-          {:noreply, state}
+    cond do
+      state.status == :ai_thinking and state.game.phase == :pie_decision and
+          state.game.current_player == :player_2 ->
+        choice = Enum.random([:swap, :keep])
+        {:ok, new_game} = Game.pie_decision(state.game, choice)
+        state = %{state | game: new_game}
+        state = maybe_schedule_ai(state)
+        broadcast(state)
+        {:noreply, state}
 
-        {:error, :no_moves} ->
-          {:noreply, %{state | status: :playing}}
-      end
-    else
-      {:noreply, state}
+      state.status == :ai_thinking and state.game.current_player == :player_2 and
+          state.game.phase == :playing ->
+        case AI.random_move(state.game) do
+          {:ok, cell} ->
+            {:ok, new_game} = Game.place(state.game, cell)
+            new_status = if new_game.phase == :game_over, do: :game_over, else: :playing
+            state = %{state | game: new_game, status: new_status}
+            broadcast(state)
+            {:noreply, state}
+
+          {:error, :no_moves} ->
+            {:noreply, %{state | status: :playing}}
+        end
+
+      true ->
+        {:noreply, state}
     end
   end
 
@@ -186,7 +238,7 @@ defmodule Havannah.GameServer do
   end
 
   defp maybe_schedule_ai(%{mode: :human_vs_ai, game: game} = state)
-       when game.current_player == :player_2 and game.phase == :playing do
+       when game.current_player == :player_2 and game.phase in [:pie_decision, :playing] do
     Process.send_after(self(), :ai_move, Enum.random(@ai_delay_ms))
     %{state | status: :ai_thinking}
   end

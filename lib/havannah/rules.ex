@@ -14,13 +14,13 @@ defmodule Havannah.Rules do
 
   # Six corners of the board: each lies at the intersection of two boundary constraints.
   @corners MapSet.new([
-    {@radius, 0},
-    {0, @radius},
-    {-@radius, @radius},
-    {-@radius, 0},
-    {0, -@radius},
-    {@radius, -@radius}
-  ])
+             {@radius, 0},
+             {0, @radius},
+             {-@radius, @radius},
+             {-@radius, 0},
+             {0, -@radius},
+             {@radius, -@radius}
+           ])
 
   @doc "Returns the MapSet of all six corner coordinates."
   def corners, do: @corners

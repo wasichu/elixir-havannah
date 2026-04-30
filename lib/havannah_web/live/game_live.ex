@@ -130,6 +130,16 @@ defmodule HavannahWeb.GameLive do
             </span>
           <% end %>
 
+          <%= if pie_rule_outcome(@game_state.game) do %>
+            <span class={[
+              "badge badge-sm badge-outline",
+              pie_rule_outcome(@game_state.game) == :swapped && "badge-warning",
+              pie_rule_outcome(@game_state.game) == :kept && "badge-ghost"
+            ]}>
+              Pie: {if pie_rule_outcome(@game_state.game) == :swapped, do: "Swapped", else: "Kept"}
+            </span>
+          <% end %>
+
           <%= if @game_state.mode == :human_vs_human do %>
             <span class="ml-auto flex items-center gap-1">
               Share:
@@ -265,6 +275,9 @@ defmodule HavannahWeb.GameLive do
       gs.game.phase in [:opening, :playing] and
       gs.game.current_player == role
   end
+
+  defp pie_rule_outcome(%{phase: phase}) when phase in [:opening, :pie_decision], do: nil
+  defp pie_rule_outcome(%{sides: sides}), do: if(sides[:player_1] == :blue, do: :kept, else: :swapped)
 
   defp current_side(%{game: game}) do
     Game.player_side(game, game.current_player)

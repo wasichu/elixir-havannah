@@ -100,7 +100,8 @@ defmodule Havannah.Game do
   def pie_decision(%__MODULE__{phase: :pie_decision} = game, choice)
       when choice in [:swap, :keep] do
     game = if choice == :swap, do: swap_sides(game), else: game
-    {:ok, %{game | phase: :playing}}
+    next = if choice == :swap, do: next_player(game), else: game.current_player
+    {:ok, %{game | phase: :playing, current_player: next}}
   end
 
   def pie_decision(%__MODULE__{phase: phase}, _choice) when phase != :pie_decision,

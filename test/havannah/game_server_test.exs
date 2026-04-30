@@ -248,11 +248,27 @@ defmodule Havannah.GameServerTest do
       assert after_state.game.board == before.game.board
     end
 
-    test "player_2 moves next after pie decision", %{pid: pid} do
+    test "player_2 moves next after :keep", %{pid: pid} do
       place(pid, "alice", {0, 0})
       pie_decision(pid, "bob", :keep)
       {:ok, state} = get_state(pid)
       assert state.game.current_player == :player_2
+    end
+
+    test "player_1 moves next after :swap", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      pie_decision(pid, "bob", :swap)
+      {:ok, state} = get_state(pid)
+      assert state.game.current_player == :player_1
+    end
+
+    test ":swap does not give player_2 two consecutive moves", %{pid: pid} do
+      place(pid, "alice", {0, 0})
+      pie_decision(pid, "bob", :swap)
+      # alice (player_1) must go next
+      assert :ok = place(pid, "alice", {1, 0})
+      # then bob
+      assert :ok = place(pid, "bob", {2, 0})
     end
   end
 
@@ -296,14 +312,37 @@ defmodule Havannah.GameServerTest do
       pid = start_server(:human_vs_ai)
       join(pid, "alice")
 
-      # Alice makes the first move
       assert :ok = place(pid, "alice", {0, 0})
 
-      # Wait for AI to decide (delay is 200–500ms)
       Process.sleep(700)
 
       {:ok, state} = get_state(pid)
       assert state.game.phase in [:playing, :game_over]
+    end
+
+    test "human can move after AI swaps (status not stuck at :ai_thinking)" do
+      # Deterministically force a swap by stubbing the AI choice is not possible
+      # without mocking, so we instead verify the invariant: after AI decides,
+      # status must be :playing or :ai_thinking (never permanently stuck), and
+      # the human must be able to place within a reasonable window.
+      pid = start_server(:human_vs_ai)
+      join(pid, "alice")
+
+      assert :ok = place(pid, "alice", {0, 0})
+
+      # Wait for AI pie decision (200–500ms) plus AI move if it kept (another 200–500ms)
+      Process.sleep(1200)
+
+      {:ok, state} = get_state(pid)
+      # Regardless of swap or keep, the game must not be stuck — it is either
+      # alice's turn (:player_1) or alice just played and it's the AI's turn.
+      assert state.status in [:playing, :ai_thinking, :game_over]
+      assert state.game.phase in [:playing, :game_over]
+
+      # If it is alice's turn, she must be able to place without error.
+      if state.game.current_player == :player_1 and state.game.phase == :playing do
+        assert :ok = place(pid, "alice", {5, 0})
+      end
     end
 
     test "game reaches :playing after AI pie decision and AI move" do
@@ -312,11 +351,9 @@ defmodule Havannah.GameServerTest do
 
       assert :ok = place(pid, "alice", {0, 0})
 
-      # Wait for AI pie decision + AI first move
       Process.sleep(1200)
 
       {:ok, state} = get_state(pid)
-      # It's alice's turn again after AI decided and moved
       assert state.game.current_player == :player_1
     end
   end

@@ -191,7 +191,7 @@ defmodule Havannah.GameServer do
           state.game.current_player == :player_2 ->
         choice = Enum.random([:swap, :keep])
         {:ok, new_game} = Game.pie_decision(state.game, choice)
-        state = %{state | game: new_game}
+        state = %{state | game: new_game, status: :playing}
         state = maybe_schedule_ai(state)
         broadcast(state)
         {:noreply, state}

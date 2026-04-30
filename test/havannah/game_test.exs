@@ -148,9 +148,17 @@ defmodule Havannah.GameTest do
       assert new_game.current_player == :player_2
     end
 
-    test "current_player stays as player_2 after :swap", %{game: game} do
+    test "current_player is player_1 after :swap (player_2 took the first move)", %{game: game} do
       {:ok, new_game} = Game.pie_decision(game, :swap)
-      assert new_game.current_player == :player_2
+      assert new_game.current_player == :player_1
+    end
+
+    test ":swap does not give player_2 two consecutive moves", %{game: game} do
+      {:ok, game} = Game.pie_decision(game, :swap)
+      # player_1 must go next, not player_2
+      assert game.current_player == :player_1
+      {:ok, game} = Game.place(game, {1, 0})
+      assert game.current_player == :player_2
     end
 
     test "cannot make pie decision twice", %{game: game} do

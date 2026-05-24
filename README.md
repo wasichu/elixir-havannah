@@ -2,7 +2,7 @@
 
 A real-time implementation of the strategy game [**Havannah**][hw], built with **Elixir**, **Phoenix LiveView**, and a custom hex board engine.
 
-Play in your browser against another human or a simple AI.
+[Play in your browser][hhp] against another human or a simple AI.
 
 ---
 
@@ -189,3 +189,4 @@ This project intentionally emphasizes:
 ---
 
 [hw]: https://en.wikipedia.org/wiki/Havannah_(board_game)
+[hhp]: https://havannah.slowinput.org

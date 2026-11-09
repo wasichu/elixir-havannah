@@ -125,11 +125,6 @@
   cursor: default;
 }
 
-.hex-last-move {
-  stroke: #f59e0b;
-  stroke-width: 3;
-}
-
 [data-theme=dark] .hex-cell {
   stroke: #475569;
 }
@@ -148,4 +143,11 @@
 
 [data-theme=dark] .hex-red {
   fill: #dc2626;
+}
+
+/* Keep the most recent stone outlined above the grid in either theme. */
+.hex-cell.hex-last-move {
+  stroke: #fbbf24;
+  stroke-width: 3;
+  stroke-linejoin: round;
 }

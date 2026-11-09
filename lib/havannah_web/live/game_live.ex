@@ -160,7 +160,7 @@ defmodule HavannahWeb.GameLive do
             <%= if can_resign?(assigns) do %>
               <button
                 id="resign"
-                phx-click={JS.show(to: "#resign-confirm")}
+                phx-click={JS.show(to: "#resign-confirm", display: "flex")}
                 class="btn btn-sm btn-ghost text-base-content/50 hover:text-error"
               >
                 Resign
@@ -215,7 +215,7 @@ defmodule HavannahWeb.GameLive do
           <% end %>
         </div>
 
-        <%!-- Legend + last move --%>
+        <%!-- Player colors --%>
         <div class="w-full flex gap-4 text-xs text-base-content/50">
           <span class="flex items-center gap-1">
             <span class={[
@@ -233,12 +233,6 @@ defmodule HavannahWeb.GameLive do
             ]}></span>
             {player_side_label(@game_state, :player_2)}
           </span>
-          <%= if @game_state.game.last_move do %>
-            <span class="ml-auto flex items-center gap-1">
-              <span class="inline-block w-2.5 h-2.5 rounded-sm border-2 border-amber-400"></span>
-              Last ({elem(@game_state.game.last_move, 0)}, {elem(@game_state.game.last_move, 1)})
-            </span>
-          <% end %>
         </div>
 
         <%!-- Pie rule decision prompt --%>
@@ -288,6 +282,7 @@ defmodule HavannahWeb.GameLive do
               <polygon
                 id={"hex-#{cell.q}-#{cell.r}"}
                 points={cell.points}
+                aria-label={if(cell.last_move, do: "Last move")}
                 class={[
                   "hex-cell",
                   is_nil(cell.side) && "hex-empty",
@@ -310,14 +305,20 @@ defmodule HavannahWeb.GameLive do
         class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"
         role="dialog"
         aria-modal="true"
+        aria-labelledby="resign-confirm-title"
       >
         <div
           class="absolute inset-0 bg-black/50"
           phx-click={JS.hide(to: "#resign-confirm")}
         >
         </div>
-        <div class="relative bg-base-100 rounded-2xl shadow-2xl p-6 max-w-xs w-full">
-          <h3 class="text-base font-bold text-base-content mb-2">Resign?</h3>
+        <div
+          id="resign-confirm-panel"
+          class="relative bg-base-100 rounded-2xl shadow-2xl p-6 max-w-xs w-full"
+        >
+          <h3 id="resign-confirm-title" class="text-base font-bold text-base-content mb-2">
+            Resign?
+          </h3>
           <p class="text-sm text-base-content/70 mb-5">
             Your opponent will win. This cannot be undone.
           </p>
@@ -348,7 +349,7 @@ defmodule HavannahWeb.GameLive do
 
   defp build_board_cells(game) do
     game.board
-    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.sort_by(fn {cell, _side} -> {cell == game.last_move, cell} end)
     |> Enum.map(fn {{q, r}, side} ->
       %{
         q: q,

@@ -23,7 +23,10 @@ defmodule HavannahWeb.Layouts do
         phx-click={JS.hide(to: "#rules-modal")}
       >
       </div>
-      <div class="relative bg-base-100 rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] overflow-y-auto">
+      <div
+        id="rules-modal-panel"
+        class="relative bg-base-100 rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] overflow-y-auto"
+      >
         <div class="flex items-center justify-between p-5 border-b border-base-300">
           <h2 id="rules-modal-title" class="text-lg font-bold text-base-content">
             How to Play Havannah
@@ -308,7 +311,7 @@ defmodule HavannahWeb.Layouts do
         <ul class="flex items-center gap-1">
           <li>
             <button
-              phx-click={JS.show(to: "#rules-modal")}
+              phx-click={JS.show(to: "#rules-modal", display: "flex")}
               class="btn btn-ghost btn-sm text-base-content/70 hover:text-base-content"
             >
               How to Play

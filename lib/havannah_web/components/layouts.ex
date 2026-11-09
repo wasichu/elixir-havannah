@@ -66,11 +66,43 @@ defmodule HavannahWeb.Layouts do
                   class="mb-1"
                 >
                   <%!-- Board edge lines diverging from left corner outer vertices --%>
-                  <line x1="4.6" y1="19" x2="-2.3" y2="15" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" />
-                  <line x1="4.6" y1="31" x2="-2.3" y2="35" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" />
+                  <line
+                    x1="4.6"
+                    y1="19"
+                    x2="-2.3"
+                    y2="15"
+                    stroke="#94a3b8"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  />
+                  <line
+                    x1="4.6"
+                    y1="31"
+                    x2="-2.3"
+                    y2="35"
+                    stroke="#94a3b8"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  />
                   <%!-- Board edge lines diverging from right corner outer vertices --%>
-                  <line x1="108.6" y1="19" x2="115.5" y2="15" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" />
-                  <line x1="108.6" y1="31" x2="115.5" y2="35" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" />
+                  <line
+                    x1="108.6"
+                    y1="19"
+                    x2="115.5"
+                    y2="15"
+                    stroke="#94a3b8"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  />
+                  <line
+                    x1="108.6"
+                    y1="31"
+                    x2="115.5"
+                    y2="35"
+                    stroke="#94a3b8"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  />
                   <%!-- Corner hexes (amber) --%>
                   <polygon
                     points="15,13 25.4,19 25.4,31 15,37 4.6,31 4.6,19"

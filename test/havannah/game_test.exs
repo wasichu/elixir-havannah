@@ -300,4 +300,18 @@ defmodule Havannah.GameTest do
       assert game.board == board_before
     end
   end
+
+  test "unknown player cannot resign" do
+    game = Game.new(:alice, :bob)
+    assert {:error, :unknown_player} = Game.resign(game, :stranger)
+  end
+
+  test "timeout awards the opposite side after a pie swap" do
+    {:ok, game} = Game.new(:alice, :bob) |> Game.place({0, 0})
+    {:ok, game} = Game.pie_decision(game, :swap)
+    {:ok, finished} = Game.timeout(game)
+    assert finished.winner == :blue
+    assert finished.win_reason == :timeout
+    assert {:error, :game_not_playing} = Game.timeout(finished)
+  end
 end

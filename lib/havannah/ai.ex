@@ -7,7 +7,7 @@ defmodule Havannah.AI do
   Returns a random empty cell from the current game board.
   Returns {:ok, {q, r}} or {:error, :no_moves} if the board is full.
   """
-  @spec random_move(%Game{}) :: {:ok, {integer(), integer()}} | {:error, :no_moves}
+  @spec random_move(Game.t()) :: {:ok, {integer(), integer()}} | {:error, :no_moves}
   def random_move(%Game{board: board}) do
     empty = for {cell, nil} <- board, do: cell
 

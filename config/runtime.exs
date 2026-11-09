@@ -35,11 +35,14 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
   port = String.to_integer(System.get_env("PORT") || "4000")
+  fly_app = System.get_env("FLY_APP_NAME")
+  origins = if fly_app, do: ["//#{host}", "//#{fly_app}.fly.dev"], else: ["//#{host}"]
 
   config :havannah, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :havannah, HavannahWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
+    check_origin: Enum.uniq(origins),
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

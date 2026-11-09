@@ -29,24 +29,24 @@ defmodule HavannahWeb.GameLive do
           |> assign(:game_state, game_state)
           |> assign(:role, nil)
           |> assign(:remaining_seconds, nil)
+          |> assign(:tick_ref, nil)
 
-        if connected?(socket) do
-          Phoenix.PubSub.subscribe(Havannah.PubSub, "game:#{game_id}")
-          {:ok, role} = GameServer.join(game_id, session_id)
-          {:ok, updated_state} = GameServer.get_state(game_id)
+        mount_game(socket, game_id, session_id, game_state)
+    end
+  end
 
-          socket =
-            socket
-            |> assign(:role, role)
-            |> assign(:game_state, updated_state)
-            |> assign(:board_cells, build_board_cells(updated_state.game))
-            |> assign(:remaining_seconds, remaining_seconds(updated_state.move_deadline))
-            |> schedule_tick()
+  defp mount_game(socket, game_id, session_id, game_state) do
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(Havannah.PubSub, "game:#{game_id}")
 
-          {:ok, socket}
-        else
-          {:ok, assign(socket, :board_cells, build_board_cells(game_state.game))}
-        end
+      with {:ok, role} <- GameServer.join(game_id, session_id),
+           {:ok, updated_state} <- GameServer.get_state(game_id) do
+        {:ok, socket |> assign(:role, role) |> assign_game(updated_state)}
+      else
+        {:error, :not_found} -> {:ok, push_navigate(socket, to: ~p"/")}
+      end
+    else
+      {:ok, assign_game(socket, game_state)}
     end
   end
 
@@ -55,16 +55,23 @@ defmodule HavannahWeb.GameLive do
   # ---------------------------------------------------------------------------
 
   @impl true
-  def handle_event("place", %{"q" => q_str, "r" => r_str}, socket) do
-    q = String.to_integer(q_str)
-    r = String.to_integer(r_str)
-    GameServer.place(socket.assigns.game_id, socket.assigns.session_id, {q, r})
+  def handle_event("place", %{"q" => q_str, "r" => r_str}, socket)
+      when is_binary(q_str) and is_binary(r_str) do
+    with {q, ""} <- Integer.parse(q_str),
+         {r, ""} <- Integer.parse(r_str) do
+      GameServer.place(socket.assigns.game_id, socket.assigns.session_id, {q, r})
+    end
+
     {:noreply, socket}
   end
 
   def handle_event("pie_decision", %{"choice" => choice}, socket) do
-    choice_atom = String.to_existing_atom(choice)
-    GameServer.pie_decision(socket.assigns.game_id, socket.assigns.session_id, choice_atom)
+    case choice do
+      "swap" -> GameServer.pie_decision(socket.assigns.game_id, socket.assigns.session_id, :swap)
+      "keep" -> GameServer.pie_decision(socket.assigns.game_id, socket.assigns.session_id, :keep)
+      _ -> :ok
+    end
+
     {:noreply, socket}
   end
 
@@ -75,33 +82,41 @@ defmodule HavannahWeb.GameLive do
 
   def handle_event("rematch", _params, socket) do
     mode = socket.assigns.game_state.mode
-    {:ok, game_id} = GameSupervisor.start_game(mode)
-    {:noreply, push_navigate(socket, to: ~p"/game/#{game_id}")}
+
+    case GameSupervisor.start_game(mode) do
+      {:ok, game_id} -> {:noreply, push_navigate(socket, to: ~p"/game/#{game_id}")}
+      {:error, _reason} -> {:noreply, put_flash(socket, :error, "Unable to start a rematch.")}
+    end
   end
 
   # ---------------------------------------------------------------------------
   # PubSub + timer tick
   # ---------------------------------------------------------------------------
 
+  # Ignore incomplete or malformed client payloads.
+  def handle_event(_event, _params, socket), do: {:noreply, socket}
+
   @impl true
   def handle_info({:game_updated, game_state}, socket) do
-    socket =
-      socket
-      |> assign(:game_state, game_state)
-      |> assign(:board_cells, build_board_cells(game_state.game))
-      |> assign(:remaining_seconds, remaining_seconds(game_state.move_deadline))
-      |> schedule_tick()
-
-    {:noreply, socket}
+    {:noreply, assign_game(socket, game_state)}
   end
 
-  def handle_info(:tick, socket) do
-    socket =
-      socket
-      |> assign(:remaining_seconds, remaining_seconds(socket.assigns.game_state.move_deadline))
-      |> schedule_tick()
+  def handle_info({:timeout, ref, :tick}, %{assigns: %{tick_ref: ref}} = socket) do
+    {:noreply,
+     socket
+     |> assign(:tick_ref, nil)
+     |> assign(:remaining_seconds, remaining_seconds(socket.assigns.game_state.move_deadline))
+     |> schedule_tick()}
+  end
 
-    {:noreply, socket}
+  def handle_info({:timeout, _ref, :tick}, socket), do: {:noreply, socket}
+
+  defp assign_game(socket, game_state) do
+    socket
+    |> assign(:game_state, game_state)
+    |> assign(:board_cells, build_board_cells(game_state.game))
+    |> assign(:remaining_seconds, remaining_seconds(game_state.move_deadline))
+    |> schedule_tick()
   end
 
   # ---------------------------------------------------------------------------
@@ -144,6 +159,7 @@ defmodule HavannahWeb.GameLive do
             <%!-- Resign button (active games, human players only) --%>
             <%= if can_resign?(assigns) do %>
               <button
+                id="resign"
                 phx-click={JS.show(to: "#resign-confirm")}
                 class="btn btn-sm btn-ghost text-base-content/50 hover:text-error"
               >
@@ -153,7 +169,7 @@ defmodule HavannahWeb.GameLive do
 
             <%!-- Rematch button (game over only) --%>
             <%= if @game_state.game.phase == :game_over do %>
-              <button phx-click="rematch" class="btn btn-sm btn-primary">
+              <button id="rematch" phx-click="rematch" class="btn btn-sm btn-primary">
                 Rematch
               </button>
             <% end %>
@@ -206,8 +222,7 @@ defmodule HavannahWeb.GameLive do
               "inline-block w-2.5 h-2.5 rounded-full",
               Game.player_side(@game_state.game, :player_1) == :blue && "bg-blue-500",
               Game.player_side(@game_state.game, :player_1) == :red && "bg-red-500"
-            ]}>
-            </span>
+            ]}></span>
             {player_side_label(@game_state, :player_1)}
           </span>
           <span class="flex items-center gap-1">
@@ -215,8 +230,7 @@ defmodule HavannahWeb.GameLive do
               "inline-block w-2.5 h-2.5 rounded-full",
               Game.player_side(@game_state.game, :player_2) == :blue && "bg-blue-500",
               Game.player_side(@game_state.game, :player_2) == :red && "bg-red-500"
-            ]}>
-            </span>
+            ]}></span>
             {player_side_label(@game_state, :player_2)}
           </span>
           <%= if @game_state.game.last_move do %>
@@ -309,6 +323,7 @@ defmodule HavannahWeb.GameLive do
           </p>
           <div class="flex gap-3">
             <button
+              id="confirm-resign"
               phx-click={JS.hide(to: "#resign-confirm") |> JS.push("resign")}
               class="btn btn-error btn-sm flex-1"
             >
@@ -332,7 +347,9 @@ defmodule HavannahWeb.GameLive do
   # ---------------------------------------------------------------------------
 
   defp build_board_cells(game) do
-    Enum.map(game.board, fn {{q, r}, side} ->
+    game.board
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {{q, r}, side} ->
       %{
         q: q,
         r: r,
@@ -347,13 +364,12 @@ defmodule HavannahWeb.GameLive do
     cx = :math.sqrt(3) * q * @hex_size + :math.sqrt(3) / 2 * r * @hex_size + @svg_cx
     cy = 1.5 * r * @hex_size + @svg_cy
 
-    Enum.map(0..5, fn i ->
+    Enum.map_join(0..5, " ", fn i ->
       angle_rad = :math.pi() / 180.0 * (30.0 + 60.0 * i)
       vx = Float.round(cx + @hex_size * :math.cos(angle_rad), 2)
       vy = Float.round(cy + @hex_size * :math.sin(angle_rad), 2)
       "#{vx},#{vy}"
     end)
-    |> Enum.join(" ")
   end
 
   defp can_move?(%{role: role, game_state: gs} = _assigns, cell) do
@@ -372,17 +388,19 @@ defmodule HavannahWeb.GameLive do
   defp remaining_seconds(nil), do: nil
 
   defp remaining_seconds(deadline) do
-    ms = deadline - :os.system_time(:millisecond)
+    ms = deadline - System.system_time(:millisecond)
     max(0, div(ms, 1000))
   end
 
   defp schedule_tick(socket) do
-    if socket.assigns.game_state.move_deadline &&
-         socket.assigns.game_state.game.phase in [:opening, :pie_decision, :playing] do
-      Process.send_after(self(), :tick, 1000)
-    end
+    if socket.assigns.tick_ref, do: Process.cancel_timer(socket.assigns.tick_ref)
 
-    socket
+    ref =
+      if connected?(socket) and socket.assigns.game_state.move_deadline do
+        :erlang.start_timer(1000, self(), :tick)
+      end
+
+    assign(socket, :tick_ref, ref)
   end
 
   defp format_time(seconds) do

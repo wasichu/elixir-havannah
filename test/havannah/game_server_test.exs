@@ -8,8 +8,22 @@ defmodule Havannah.GameServerTest do
   # so we call GenServer directly here.
   defp start_server(mode) do
     game_id = "test-#{System.unique_integer([:positive])}"
-    {:ok, pid} = GenServer.start_link(GameServer, {game_id, mode})
-    pid
+
+    start_supervised!(%{
+      id: game_id,
+      start: {GenServer, :start_link, [GameServer, {game_id, mode, [ai_delay_ms: 60_000]}]}
+    })
+  end
+
+  defp fire_ai(pid) do
+    state = :sys.get_state(pid)
+    send(pid, {:timeout, state.ai_ref, :ai_move})
+    get_state(pid)
+  end
+
+  defp finish_ai_turn(pid) do
+    {:ok, state} = fire_ai(pid)
+    if state.status == :ai_thinking, do: fire_ai(pid), else: {:ok, state}
   end
 
   defp get_state(pid), do: GenServer.call(pid, :get_state)
@@ -316,35 +330,26 @@ defmodule Havannah.GameServerTest do
 
       assert :ok = place(pid, "alice", {0, 0})
 
-      Process.sleep(700)
+      fire_ai(pid)
 
       {:ok, state} = get_state(pid)
       assert state.game.phase in [:playing, :game_over]
     end
 
-    test "human can move after AI swaps (status not stuck at :ai_thinking)" do
-      # Deterministically force a swap by stubbing the AI choice is not possible
-      # without mocking, so we instead verify the invariant: after AI decides,
-      # status must be :playing or :ai_thinking (never permanently stuck), and
-      # the human must be able to place within a reasonable window.
+    test "human can move after AI finishes its opening turn" do
       pid = start_server(:human_vs_ai)
       join(pid, "alice")
 
       assert :ok = place(pid, "alice", {0, 0})
 
-      # Wait for AI pie decision (200–500ms) plus AI move if it kept (another 200–500ms)
-      Process.sleep(1200)
+      finish_ai_turn(pid)
 
       {:ok, state} = get_state(pid)
-      # Regardless of swap or keep, the game must not be stuck — it is either
-      # alice's turn (:player_1) or alice just played and it's the AI's turn.
-      assert state.status in [:playing, :ai_thinking, :game_over]
-      assert state.game.phase in [:playing, :game_over]
-
-      # If it is alice's turn, she must be able to place without error.
-      if state.game.current_player == :player_1 and state.game.phase == :playing do
-        assert :ok = place(pid, "alice", {5, 0})
-      end
+      assert state.status == :playing
+      assert state.game.phase == :playing
+      assert state.game.current_player == :player_1
+      {cell, nil} = Enum.find(state.game.board, fn {_cell, side} -> is_nil(side) end)
+      assert :ok = place(pid, "alice", cell)
     end
 
     test "game reaches :playing after AI pie decision and AI move" do
@@ -353,7 +358,7 @@ defmodule Havannah.GameServerTest do
 
       assert :ok = place(pid, "alice", {0, 0})
 
-      Process.sleep(1200)
+      finish_ai_turn(pid)
 
       {:ok, state} = get_state(pid)
       assert state.game.current_player == :player_1
@@ -468,12 +473,13 @@ defmodule Havannah.GameServerTest do
       join(pid, "alice")
       join(pid, "bob")
       {:ok, before} = get_state(pid)
-      Process.sleep(20)
+      old_ref = :sys.get_state(pid).timer_ref
       place(pid, "alice", {0, 0})
       pie_decision(pid, "bob", :keep)
       {:ok, after_state} = get_state(pid)
-      # New deadline should be later than the original one (reset after bob's turn)
-      assert after_state.move_deadline > before.move_deadline
+      assert after_state.move_deadline >= before.move_deadline
+      refute :sys.get_state(pid).timer_ref == old_ref
+      assert Process.read_timer(old_ref) == false
     end
 
     test "move_deadline is nil after game over by resign" do
@@ -491,8 +497,8 @@ defmodule Havannah.GameServerTest do
       join(pid, "bob")
 
       # Manually fire the timeout message, simulating timer expiry
-      send(pid, :move_timeout)
-      Process.sleep(50)
+      state = :sys.get_state(pid)
+      send(pid, {:timeout, state.timer_ref || make_ref(), :move_timeout})
 
       {:ok, state} = get_state(pid)
       assert state.game.phase == :game_over
@@ -507,11 +513,85 @@ defmodule Havannah.GameServerTest do
       join(pid, "bob")
       resign(pid, "alice")
 
-      send(pid, :move_timeout)
-      Process.sleep(50)
+      state = :sys.get_state(pid)
+      send(pid, {:timeout, state.timer_ref || make_ref(), :move_timeout})
 
       {:ok, state} = get_state(pid)
       assert state.game.win_reason == :resignation
+    end
+  end
+
+  describe "turn and identity safety" do
+    test "cannot move before both human slots are filled" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      assert {:error, :waiting_for_players} = place(pid, "alice", {0, 0})
+      {:ok, state} = get_state(pid)
+      assert state.game.phase == :opening
+      assert is_nil(state.move_deadline)
+    end
+
+    test "snapshots and broadcasts conceal session identities" do
+      pid = start_server(:human_vs_human)
+      state = :sys.get_state(pid)
+      Phoenix.PubSub.subscribe(Havannah.PubSub, "game:#{state.id}")
+      join(pid, "private-alice-session")
+      assert_receive {:game_updated, snapshot}
+      assert snapshot.slots.player_1 == :occupied
+      refute Map.has_key?(snapshot, :assignments)
+      assert {:ok, ^snapshot} = get_state(pid)
+    end
+
+    test "cancelled timeout cannot end the next turn" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+      old_ref = :sys.get_state(pid).timer_ref
+      place(pid, "alice", {0, 0})
+      send(pid, {:timeout, old_ref, :move_timeout})
+      {:ok, state} = get_state(pid)
+      assert state.game.phase == :pie_decision
+      assert state.status == :playing
+    end
+
+    test "stale AI messages cannot advance a subsequent AI turn" do
+      pid = start_server(:human_vs_ai)
+      join(pid, "alice")
+      place(pid, "alice", {0, 0})
+      old_ref = :sys.get_state(pid).ai_ref
+      finish_ai_turn(pid)
+      {:ok, state} = get_state(pid)
+      {cell, nil} = Enum.find(state.game.board, fn {_cell, side} -> is_nil(side) end)
+      place(pid, "alice", cell)
+      {:ok, before} = get_state(pid)
+      send(pid, {:timeout, old_ref, :ai_move})
+      assert {:ok, ^before} = get_state(pid)
+    end
+
+    test "malformed coordinates do not crash the game process" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+
+      for cell <- [{"0", 0}, {0.5, 0}, nil, [0, 0]] do
+        assert {:error, :invalid_cell} = place(pid, "alice", cell)
+      end
+
+      assert Process.alive?(pid)
+    end
+
+    test "a crashed supervised match is not restarted with an empty board" do
+      {:ok, id} = Havannah.GameSupervisor.start_game(:human_vs_human)
+      [{pid, _}] = Registry.lookup(Havannah.GameRegistry, id)
+      monitor = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}
+      assert {:error, :not_found} = GameServer.get_state(id)
+    end
+
+    test "public API returns not_found for missing games" do
+      assert {:error, :not_found} = GameServer.get_state("missing")
+      assert {:error, :not_found} = GameServer.join("missing", "alice")
     end
   end
 end

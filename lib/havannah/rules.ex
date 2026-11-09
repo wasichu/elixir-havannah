@@ -23,9 +23,11 @@ defmodule Havannah.Rules do
            ])
 
   @doc "Returns the MapSet of all six corner coordinates."
+  @spec corners() :: MapSet.t(Board.cell())
   def corners, do: @corners
 
   @doc "Returns true if the coordinate is a corner of the board."
+  @spec corner?(Board.cell()) :: boolean()
   def corner?(coord), do: MapSet.member?(@corners, coord)
 
   @doc """
@@ -40,6 +42,7 @@ defmodule Havannah.Rules do
     5: r   = -R  (NW edge, between corners {0,-R} and {R,-R})
     6: q   =  R  (E  edge, between corners {R,-R} and {R,0})
   """
+  @spec edge_id(Board.cell()) :: 1..6 | nil
   def edge_id({q, r} = coord) do
     cond do
       corner?(coord) -> nil
@@ -57,15 +60,19 @@ defmodule Havannah.Rules do
   Returns a MapSet of all coordinates in the connected group containing `start`.
   All cells in the group share the same side as `start`.
   """
+  @spec get_group(Board.t(), Board.cell()) :: MapSet.t(Board.cell())
   def get_group(board, start) do
-    side = Map.get(board, start)
-    bfs([start], MapSet.new([start]), board, side)
+    case Map.get(board, start) do
+      nil -> MapSet.new()
+      side -> collect_group([start], MapSet.new([start]), board, side)
+    end
   end
 
   @doc """
   Checks whether `side` has won on the given board.
   Returns :bridge, :fork, :ring, or :none.
   """
+  @spec check_win(Board.t(), :blue | :red) :: :bridge | :fork | :ring | :none
   def check_win(board, side) do
     groups = connected_groups(board, side)
 
@@ -100,17 +107,17 @@ defmodule Havannah.Rules do
     groups
   end
 
-  defp bfs([], visited, _board, _side), do: visited
+  defp collect_group([], visited, _board, _side), do: visited
 
-  defp bfs([cell | rest], visited, board, side) do
+  defp collect_group([cell | rest], visited, board, side) do
     new_neighbors =
       Board.neighbors(cell)
       |> Enum.filter(fn n ->
         Map.get(board, n) == side and not MapSet.member?(visited, n)
       end)
 
-    bfs(
-      rest ++ new_neighbors,
+    collect_group(
+      new_neighbors ++ rest,
       Enum.reduce(new_neighbors, visited, &MapSet.put(&2, &1)),
       board,
       side
@@ -146,7 +153,18 @@ defmodule Havannah.Rules do
 
     reachable = flood_fill(boundary_start, MapSet.new(boundary_start), passable)
 
-    MapSet.size(passable) > MapSet.size(reachable)
+    MapSet.size(passable) > MapSet.size(reachable) or filled_ring?(board, side)
+  end
+
+  # Flood fill detects empty/opponent interiors. An interior containing only
+  # friendly stones still wins: one of those stones has six friendly neighbors.
+  defp filled_ring?(board, side) do
+    Enum.any?(board, fn {cell, owner} ->
+      neighbors = Board.neighbors(cell)
+
+      owner == side and length(neighbors) == 6 and
+        Enum.all?(neighbors, &(Map.get(board, &1) == side))
+    end)
   end
 
   defp flood_fill([], visited, _passable), do: visited
@@ -159,7 +177,7 @@ defmodule Havannah.Rules do
       end)
 
     flood_fill(
-      rest ++ new_neighbors,
+      new_neighbors ++ rest,
       Enum.reduce(new_neighbors, visited, &MapSet.put(&2, &1)),
       passable
     )

@@ -10,14 +10,25 @@ defmodule HavannahWeb.LobbyLive do
 
   @impl true
   def handle_event("set_mode", %{"mode" => mode}, socket) do
-    {:noreply, assign(socket, :mode, String.to_existing_atom(mode))}
+    case mode do
+      "human_vs_human" -> {:noreply, assign(socket, :mode, :human_vs_human)}
+      "human_vs_ai" -> {:noreply, assign(socket, :mode, :human_vs_ai)}
+      _ -> {:noreply, socket}
+    end
   end
 
   @impl true
   def handle_event("create_game", _params, socket) do
-    {:ok, game_id} = GameSupervisor.start_game(socket.assigns.mode)
-    {:noreply, push_navigate(socket, to: ~p"/game/#{game_id}")}
+    case GameSupervisor.start_game(socket.assigns.mode) do
+      {:ok, game_id} ->
+        {:noreply, push_navigate(socket, to: ~p"/game/#{game_id}")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Unable to start a game. Please try again.")}
+    end
   end
+
+  def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -42,6 +53,7 @@ defmodule HavannahWeb.LobbyLive do
                 @mode != :human_vs_human && "border-base-300 hover:border-base-content/30"
               ]}>
                 <input
+                  id="mode-human-vs-human"
                   type="radio"
                   name="mode"
                   value="human_vs_human"
@@ -62,6 +74,7 @@ defmodule HavannahWeb.LobbyLive do
                 @mode != :human_vs_ai && "border-base-300 hover:border-base-content/30"
               ]}>
                 <input
+                  id="mode-human-vs-ai"
                   type="radio"
                   name="mode"
                   value="human_vs_ai"
@@ -77,7 +90,7 @@ defmodule HavannahWeb.LobbyLive do
               </label>
             </div>
 
-            <button phx-click="create_game" class="btn btn-primary w-full">
+            <button id="create-game" phx-click="create_game" class="btn btn-primary w-full">
               Create Game
             </button>
           </div>

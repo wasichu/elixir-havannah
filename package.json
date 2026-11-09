@@ -1,0 +1,11 @@
+{
+  "name": "havannah-assets",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "topbar": "3.0.1"
+  },
+  "devDependencies": {
+    "daisyui": "5.7.50"
+  }
+}

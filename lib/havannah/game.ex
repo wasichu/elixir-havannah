@@ -14,14 +14,15 @@ defmodule Havannah.Game do
   defstruct [:board, :players, :sides, :current_player, :phase, :last_move, :winner, :win_reason]
 
   @type side :: :blue | :red
-  @type player :: any()
+  @type player :: term()
+  @type phase :: :opening | :pie_decision | :playing | :game_over
   @type win_reason :: :bridge | :fork | :ring | :resignation | :timeout
   @type t :: %__MODULE__{
-          board: %{{integer(), integer()} => side() | nil},
+          board: Board.t(),
           players: [player()],
           sides: %{player() => side()},
           current_player: player(),
-          phase: :opening | :pie_decision | :playing | :game_over,
+          phase: phase(),
           last_move: {integer(), integer()} | nil,
           winner: side() | nil,
           win_reason: win_reason() | nil
@@ -31,6 +32,7 @@ defmodule Havannah.Game do
   Creates a new game with two players. Player `player_a` is assigned :blue
   and goes first; `player_b` is assigned :red.
   """
+  @spec new(player(), player()) :: t()
   def new(player_a, player_b) do
     %__MODULE__{
       board: Board.new_board(),
@@ -45,6 +47,7 @@ defmodule Havannah.Game do
   end
 
   @doc "Returns the side (:blue or :red) for the given player."
+  @spec player_side(t(), player()) :: side() | nil
   def player_side(%__MODULE__{sides: sides}, player) do
     Map.get(sides, player)
   end
@@ -57,43 +60,19 @@ defmodule Havannah.Game do
   :opening, the game transitions to :pie_decision. Win conditions are
   evaluated after every placement.
   """
-  def place(%__MODULE__{phase: phase} = game, {q, r}) when phase in [:opening, :playing] do
+  @spec place(t(), term()) :: {:ok, t()} | {:error, atom()}
+  def place(%__MODULE__{phase: phase} = game, cell) when phase in [:opening, :playing] do
     cond do
-      not Board.valid?({q, r}) ->
+      not Board.valid?(cell) ->
         {:error, :invalid_cell}
 
-      Map.get(game.board, {q, r}) != nil ->
+      Map.get(game.board, cell) != nil ->
         {:error, :cell_occupied}
 
       true ->
         side = player_side(game, game.current_player)
-        new_board = Map.put(game.board, {q, r}, side)
-
-        case Rules.check_win(new_board, side) do
-          :none ->
-            next = next_player(game)
-            next_phase = if phase == :opening, do: :pie_decision, else: :playing
-
-            {:ok,
-             %{
-               game
-               | board: new_board,
-                 current_player: next,
-                 last_move: {q, r},
-                 phase: next_phase
-             }}
-
-          win_reason ->
-            {:ok,
-             %{
-               game
-               | board: new_board,
-                 phase: :game_over,
-                 winner: side,
-                 win_reason: win_reason,
-                 last_move: {q, r}
-             }}
-        end
+        game = %{game | board: Map.put(game.board, cell, side), last_move: cell}
+        {:ok, resolve_move(game, side)}
     end
   end
 
@@ -108,6 +87,7 @@ defmodule Havannah.Game do
 
   Returns {:ok, updated_game} | {:error, reason}.
   """
+  @spec pie_decision(t(), term()) :: {:ok, t()} | {:error, atom()}
   def pie_decision(%__MODULE__{phase: :pie_decision} = game, choice)
       when choice in [:swap, :keep] do
     game = if choice == :swap, do: swap_sides(game), else: game
@@ -125,14 +105,40 @@ defmodule Havannah.Game do
   Valid in :opening, :pie_decision, and :playing phases.
   Returns {:ok, updated_game} | {:error, reason}.
   """
+  @spec resign(t(), player()) :: {:ok, t()} | {:error, atom()}
   def resign(%__MODULE__{phase: phase} = game, player)
       when phase in [:opening, :pie_decision, :playing] do
-    loser_side = player_side(game, player)
-    winner_side = other_side(loser_side)
-    {:ok, %{game | phase: :game_over, winner: winner_side, win_reason: :resignation}}
+    finish(game, player, :resignation)
   end
 
   def resign(%__MODULE__{}, _), do: {:error, :game_not_playing}
+
+  @doc "Ends an active game when a player's move clock expires."
+  @spec timeout(t()) :: {:ok, t()} | {:error, :game_not_playing}
+  def timeout(%__MODULE__{phase: phase} = game)
+      when phase in [:opening, :pie_decision, :playing] do
+    finish(game, game.current_player, :timeout)
+  end
+
+  def timeout(%__MODULE__{}), do: {:error, :game_not_playing}
+
+  defp finish(game, player, reason) do
+    case player_side(game, player) do
+      nil -> {:error, :unknown_player}
+      side -> {:ok, %{game | phase: :game_over, winner: other_side(side), win_reason: reason}}
+    end
+  end
+
+  defp resolve_move(game, side) do
+    case Rules.check_win(game.board, side) do
+      :none ->
+        phase = if game.phase == :opening, do: :pie_decision, else: :playing
+        %{game | current_player: next_player(game), phase: phase}
+
+      reason ->
+        %{game | phase: :game_over, winner: side, win_reason: reason}
+    end
+  end
 
   defp swap_sides(%__MODULE__{sides: sides, players: [p1, p2]} = game) do
     %{game | sides: %{p1 => sides[p2], p2 => sides[p1]}}

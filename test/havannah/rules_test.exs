@@ -18,6 +18,11 @@ defmodule Havannah.RulesTest do
   # ---------------------------------------------------------------------------
 
   describe "get_group/2" do
+    test "empty or missing cells have no stone group" do
+      assert Rules.get_group(empty_board(), {0, 0}) == MapSet.new()
+      assert Rules.get_group(empty_board(), {99, 99}) == MapSet.new()
+    end
+
     test "single stone returns a singleton MapSet" do
       board = put_stones(empty_board(), :blue, [{0, 0}])
       assert Rules.get_group(board, {0, 0}) == MapSet.new([{0, 0}])
@@ -219,6 +224,17 @@ defmodule Havannah.RulesTest do
   # ---------------------------------------------------------------------------
 
   describe "check_win/2 — ring" do
+    test "ring enclosing friendly stones wins" do
+      cells = [{0, 0} | Board.neighbors({0, 0})]
+      board = put_stones(empty_board(), :blue, cells)
+      assert Rules.check_win(board, :blue) == :ring
+    end
+
+    test "a triangle of friendly stones encloses no cells" do
+      board = put_stones(empty_board(), :blue, [{0, 0}, {1, 0}, {0, 1}])
+      assert Rules.check_win(board, :blue) == :none
+    end
+
     test "six stones forming a ring around the center win by ring" do
       # Minimal hexagonal ring surrounding {0,0}
       ring = [{1, 0}, {0, 1}, {-1, 1}, {-1, 0}, {0, -1}, {1, -1}]

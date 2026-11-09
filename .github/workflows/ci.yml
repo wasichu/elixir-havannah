@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml') }}-${{ hashFiles('mix.lock', 'config/**') }}
+          restore-keys: |
+            mix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml') }}-
+      - name: Install package tooling
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+      - name: Fetch locked dependencies
+        run: mix deps.get --check-locked
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Check source, tests, and assets
+        run: just ci
+      - name: Build production release
+        run: just release
+
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build deployment image
+        run: docker build --tag havannah:ci .
+      - name: Boot production image and verify HTTP health
+        run: |
+          trap 'docker logs havannah-smoke; docker rm --force havannah-smoke' EXIT
+          docker run --detach --name havannah-smoke \
+            --publish 127.0.0.1:4801:4000 \
+            --env PHX_SERVER=true --env PHX_HOST=localhost --env PORT=4000 \
+            --env SECRET_KEY_BASE="$(openssl rand -hex 64)" \
+            havannah:ci
+          curl --fail --silent --show-error --retry 30 --retry-all-errors \
+            --retry-delay 1 --retry-max-time 45 --max-time 5 http://127.0.0.1:4801/ > /dev/null

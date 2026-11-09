@@ -1,108 +1,69 @@
 defmodule Havannah.GameServer do
   @moduledoc """
-  Authoritative game process for a single Havannah match.
+  Authoritative, in-memory process for one match.
 
-  Holds all game state. All moves go through here; the LiveView layer only
-  subscribes and renders. Broadcasts {:game_updated, state} on every change.
-
-  Players are identified by session IDs (strings). Internally the pure
-  Havannah.Game struct uses :player_1 / :player_2 as player identities.
-
-  State shape:
-    id            - unique game ID
-    mode          - :human_vs_human | :human_vs_ai
-    game          - %Havannah.Game{}
-    slots         - %{player_1: :open | session_id, player_2: :open | :ai | session_id}
-    assignments   - %{session_id => :player_1 | :player_2 | :spectator}
-    status        - :waiting | :playing | :ai_thinking | :game_over
-    timer_ref     - Process.send_after ref for the current move timer, or nil
-    move_deadline - absolute millisecond timestamp when current timer expires, or nil
+  Session identities stay private. Subscribers receive `{:game_updated, state}`
+  with board state, slot availability, status, and a wall-clock move deadline.
+  Timer references identify turns so cancelled messages cannot end a later turn.
+  Games are temporary children: a crash cannot silently recreate an empty match.
   """
 
-  use GenServer
+  use GenServer, restart: :temporary
 
   alias Havannah.{AI, Game}
 
-  @ai_delay_ms 200..500
   @move_timeout_ms 5 * 60 * 1000
-
-  # ---------------------------------------------------------------------------
-  # Public API
-  # ---------------------------------------------------------------------------
 
   def start_link({game_id, mode}) do
     GenServer.start_link(__MODULE__, {game_id, mode}, name: via(game_id))
   end
 
-  @doc "Returns {:ok, state} or {:error, :not_found}."
-  def get_state(game_id) do
-    with_server(game_id, fn pid -> GenServer.call(pid, :get_state) end)
-  end
+  @doc "Returns the public snapshot, or `{:error, :not_found}`."
+  def get_state(game_id), do: call(game_id, :get_state)
 
-  @doc """
-  Assigns a role to a session. First human gets :player_1, second :player_2,
-  rest are :spectators. Re-joining an existing session returns the stored role.
-  Returns {:ok, role} or {:error, :not_found}.
-  """
-  def join(game_id, session_id) do
-    with_server(game_id, fn pid -> GenServer.call(pid, {:join, session_id}) end)
-  end
+  @doc "Claims an available player slot; additional sessions are spectators."
+  def join(game_id, session_id), do: call(game_id, {:join, session_id})
 
-  @doc """
-  Attempts to place a stone at {q, r} on behalf of session_id.
-  Returns :ok | {:error, reason}.
-  """
-  def place(game_id, session_id, cell) do
-    with_server(game_id, fn pid -> GenServer.call(pid, {:place, session_id, cell}) end)
-  end
+  def place(game_id, session_id, cell), do: call(game_id, {:place, session_id, cell})
 
-  @doc """
-  Records the second player's pie rule decision (:swap or :keep).
-  Returns :ok | {:error, reason}.
-  """
-  def pie_decision(game_id, session_id, choice) do
-    with_server(game_id, fn pid -> GenServer.call(pid, {:pie_decision, session_id, choice}) end)
-  end
+  def pie_decision(game_id, session_id, choice),
+    do: call(game_id, {:pie_decision, session_id, choice})
 
-  @doc """
-  Resigns on behalf of session_id. The opposing player wins.
-  Returns :ok | {:error, reason}.
-  """
-  def resign(game_id, session_id) do
-    with_server(game_id, fn pid -> GenServer.call(pid, {:resign, session_id}) end)
-  end
+  def resign(game_id, session_id), do: call(game_id, {:resign, session_id})
 
-  @doc "Registration tuple for the Registry."
-  def via(game_id) do
-    {:via, Registry, {Havannah.GameRegistry, game_id}}
-  end
+  def via(game_id), do: {:via, Registry, {Havannah.GameRegistry, game_id}}
 
-  # ---------------------------------------------------------------------------
-  # GenServer callbacks
-  # ---------------------------------------------------------------------------
+  defp call(game_id, message) do
+    GenServer.call(via(game_id), message)
+  catch
+    :exit, {:noproc, _} -> {:error, :not_found}
+    :exit, {:normal, _} -> {:error, :not_found}
+    :exit, {:shutdown, _} -> {:error, :not_found}
+  end
 
   @impl true
-  def init({game_id, mode}) do
-    game = Game.new(:player_1, :player_2)
+  def init({game_id, mode}), do: init({game_id, mode, []})
 
-    slots =
-      case mode do
-        :human_vs_ai -> %{player_1: :open, player_2: :ai}
-        :human_vs_human -> %{player_1: :open, player_2: :open}
-      end
-
-    state = %{
-      id: game_id,
-      mode: mode,
-      game: game,
-      slots: slots,
-      assignments: %{},
-      status: :waiting,
-      timer_ref: nil,
-      move_deadline: nil
+  def init({game_id, mode, opts}) do
+    slots = %{
+      player_1: :open,
+      player_2: if(mode == :human_vs_ai, do: :ai, else: :open)
     }
 
-    {:ok, state}
+    {:ok,
+     %{
+       id: game_id,
+       mode: mode,
+       game: Game.new(:player_1, :player_2),
+       slots: slots,
+       assignments: %{},
+       status: :waiting,
+       timer_ref: nil,
+       ai_ref: nil,
+       move_deadline: nil,
+       move_timeout_ms: Keyword.get(opts, :move_timeout_ms, @move_timeout_ms),
+       ai_delay_ms: Keyword.get(opts, :ai_delay_ms, 200..500)
+     }}
   end
 
   @impl true
@@ -110,241 +71,146 @@ defmodule Havannah.GameServer do
     {:reply, {:ok, public_state(state)}, state}
   end
 
-  @impl true
-  def handle_call({:join, session_id}, _from, state) do
-    cond do
-      Map.has_key?(state.assignments, session_id) ->
-        {:reply, {:ok, state.assignments[session_id]}, state}
+  def handle_call({:join, session_id}, _from, state) when is_binary(session_id) do
+    case Map.fetch(state.assignments, session_id) do
+      {:ok, role} ->
+        {:reply, {:ok, role}, state}
 
-      state.slots.player_1 == :open ->
-        state = fill_slot(state, :player_1, session_id)
-        {:reply, {:ok, :player_1}, state}
-
-      state.slots.player_2 == :open ->
-        state = fill_slot(state, :player_2, session_id)
-        {:reply, {:ok, :player_2}, state}
-
-      true ->
-        state = put_in(state.assignments[session_id], :spectator)
-        {:reply, {:ok, :spectator}, state}
+      :error ->
+        join_slot(state, session_id)
     end
   end
 
-  @impl true
-  def handle_call({:place, session_id, cell}, _from, state) do
-    role = Map.get(state.assignments, session_id)
+  def handle_call({:join, _}, _from, state),
+    do: {:reply, {:error, :invalid_session}, state}
 
-    cond do
-      is_nil(role) ->
-        {:reply, {:error, :not_in_game}, state}
-
-      role == :spectator ->
-        {:reply, {:error, :spectator_cannot_move}, state}
-
-      state.status == :ai_thinking ->
-        {:reply, {:error, :ai_thinking}, state}
-
-      state.game.current_player != role ->
-        {:reply, {:error, :not_your_turn}, state}
-
-      true ->
-        case Game.place(state.game, cell) do
-          {:ok, new_game} ->
-            state = cancel_timer(state)
-            state = %{state | game: new_game}
-
-            state =
-              if new_game.phase == :game_over do
-                %{state | status: :game_over, move_deadline: nil}
-              else
-                state |> maybe_start_timer() |> maybe_schedule_ai()
-              end
-
-            broadcast(state)
-            {:reply, :ok, state}
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
+  def handle_call({action, session_id, value}, _from, state)
+      when action in [:place, :pie_decision] do
+    with {:ok, role} <- authorize(state, session_id, action),
+         :ok <- validate_turn(state, role, action),
+         {:ok, game} <- apply_action(state.game, action, value) do
+      state = transition(state, game)
+      {:reply, :ok, state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  @impl true
-  def handle_call({:pie_decision, session_id, choice}, _from, state) do
-    role = Map.get(state.assignments, session_id)
-
-    cond do
-      is_nil(role) ->
-        {:reply, {:error, :not_in_game}, state}
-
-      role == :spectator ->
-        {:reply, {:error, :spectator_cannot_decide}, state}
-
-      state.game.phase != :pie_decision ->
-        {:reply, {:error, :invalid_phase}, state}
-
-      state.game.current_player != role ->
-        {:reply, {:error, :not_your_turn}, state}
-
-      true ->
-        case Game.pie_decision(state.game, choice) do
-          {:ok, new_game} ->
-            state = cancel_timer(state)
-            state = %{state | game: new_game}
-            state = state |> maybe_start_timer() |> maybe_schedule_ai()
-            broadcast(state)
-            {:reply, :ok, state}
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
-    end
-  end
-
-  @impl true
   def handle_call({:resign, session_id}, _from, state) do
-    role = Map.get(state.assignments, session_id)
-
-    cond do
-      is_nil(role) ->
-        {:reply, {:error, :not_in_game}, state}
-
-      role == :spectator ->
-        {:reply, {:error, :spectator_cannot_resign}, state}
-
-      state.game.phase not in [:opening, :pie_decision, :playing] ->
-        {:reply, {:error, :game_not_playing}, state}
-
-      true ->
-        case Game.resign(state.game, role) do
-          {:ok, new_game} ->
-            state = cancel_timer(state)
-            state = %{state | game: new_game, status: :game_over, move_deadline: nil}
-            broadcast(state)
-            {:reply, :ok, state}
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
-    end
-  end
-
-  @impl true
-  def handle_info(:ai_move, state) do
-    cond do
-      state.status == :ai_thinking and state.game.phase == :pie_decision and
-          state.game.current_player == :player_2 ->
-        choice = Enum.random([:swap, :keep])
-        {:ok, new_game} = Game.pie_decision(state.game, choice)
-        state = cancel_timer(state)
-        state = %{state | game: new_game, status: :playing}
-        state = state |> maybe_start_timer() |> maybe_schedule_ai()
-        broadcast(state)
-        {:noreply, state}
-
-      state.status == :ai_thinking and state.game.current_player == :player_2 and
-          state.game.phase == :playing ->
-        case AI.random_move(state.game) do
-          {:ok, cell} ->
-            {:ok, new_game} = Game.place(state.game, cell)
-            state = cancel_timer(state)
-
-            state =
-              if new_game.phase == :game_over do
-                %{state | game: new_game, status: :game_over, move_deadline: nil}
-              else
-                state = %{state | game: new_game, status: :playing}
-                maybe_start_timer(state)
-              end
-
-            broadcast(state)
-            {:noreply, state}
-
-          {:error, :no_moves} ->
-            {:noreply, %{state | status: :playing}}
-        end
-
-      true ->
-        {:noreply, state}
-    end
-  end
-
-  @impl true
-  def handle_info(:move_timeout, state) do
-    if state.game.phase in [:opening, :pie_decision, :playing] do
-      loser_side = Game.player_side(state.game, state.game.current_player)
-      winner_side = other_side(loser_side)
-      new_game = %{state.game | phase: :game_over, winner: winner_side, win_reason: :timeout}
-      state = %{state | game: new_game, status: :game_over, timer_ref: nil, move_deadline: nil}
-      broadcast(state)
-      {:noreply, state}
+    with {:ok, role} <- authorize(state, session_id, :resign),
+         {:ok, game} <- Game.resign(state.game, role) do
+      {:reply, :ok, transition(state, game)}
     else
-      {:noreply, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # Private helpers
-  # ---------------------------------------------------------------------------
+  @impl true
+  def handle_info({:timeout, ref, :ai_move}, %{ai_ref: ref, status: :ai_thinking} = state) do
+    result =
+      case state.game.phase do
+        :pie_decision ->
+          Game.pie_decision(state.game, Enum.random([:swap, :keep]))
 
-  defp fill_slot(state, role, session_id) do
+        :playing ->
+          with {:ok, cell} <- AI.random_move(state.game), do: Game.place(state.game, cell)
+      end
+
+    case result do
+      {:ok, game} -> {:noreply, transition(state, game)}
+      {:error, :no_moves} -> {:noreply, %{state | ai_ref: nil, status: :playing}}
+    end
+  end
+
+  def handle_info({:timeout, ref, :move_timeout}, %{timer_ref: ref} = state)
+      when is_reference(ref) do
+    {:ok, game} = Game.timeout(state.game)
+    {:noreply, transition(state, game)}
+  end
+
+  # Messages already queued before cancellation belong to an obsolete turn.
+  def handle_info({:timeout, _ref, kind}, state) when kind in [:move_timeout, :ai_move],
+    do: {:noreply, state}
+
+  defp join_slot(state, session_id) do
+    role = Enum.find([:player_1, :player_2], &(Map.fetch!(state.slots, &1) == :open))
+
+    if role do
+      state =
+        state
+        |> put_in([:slots, role], session_id)
+        |> put_in([:assignments, session_id], role)
+
+      state =
+        if ready?(state) do
+          transition(state, state.game)
+        else
+          broadcast(state)
+          state
+        end
+
+      {:reply, {:ok, role}, state}
+    else
+      state = put_in(state.assignments[session_id], :spectator)
+      {:reply, {:ok, :spectator}, state}
+    end
+  end
+
+  defp ready?(state), do: Enum.all?(state.slots, fn {_role, occupant} -> occupant != :open end)
+
+  defp authorize(state, session_id, action) do
+    case Map.get(state.assignments, session_id) do
+      nil -> {:error, :not_in_game}
+      :spectator -> {:error, spectator_error(action)}
+      role -> {:ok, role}
+    end
+  end
+
+  defp spectator_error(:place), do: :spectator_cannot_move
+  defp spectator_error(:pie_decision), do: :spectator_cannot_decide
+  defp spectator_error(:resign), do: :spectator_cannot_resign
+
+  defp validate_turn(state, role, action) do
+    cond do
+      state.status == :waiting -> {:error, :waiting_for_players}
+      state.status == :ai_thinking -> {:error, :ai_thinking}
+      action == :pie_decision and state.game.phase != :pie_decision -> {:error, :invalid_phase}
+      state.game.current_player != role -> {:error, :not_your_turn}
+      true -> :ok
+    end
+  end
+
+  defp apply_action(game, :place, cell), do: Game.place(game, cell)
+  defp apply_action(game, :pie_decision, choice), do: Game.pie_decision(game, choice)
+
+  defp transition(state, game) do
+    cancel_timer(state.timer_ref)
+    cancel_timer(state.ai_ref)
+    state = %{state | game: game, timer_ref: nil, ai_ref: nil, move_deadline: nil}
+
+    state =
+      cond do
+        game.phase == :game_over ->
+          %{state | status: :game_over}
+
+        state.mode == :human_vs_ai and game.current_player == :player_2 ->
+          delay = state.ai_delay_ms
+          delay = if is_integer(delay), do: delay, else: Enum.random(delay)
+          ref = :erlang.start_timer(delay, self(), :ai_move)
+          %{state | status: :ai_thinking, ai_ref: ref}
+
+        true ->
+          ref = :erlang.start_timer(state.move_timeout_ms, self(), :move_timeout)
+          deadline = System.system_time(:millisecond) + state.move_timeout_ms
+          %{state | status: :playing, timer_ref: ref, move_deadline: deadline}
+      end
+
+    broadcast(state)
     state
-    |> put_in([:slots, role], session_id)
-    |> put_in([:assignments, session_id], role)
-    |> update_status()
-    |> maybe_start_timer()
-    |> tap(&broadcast/1)
   end
 
-  defp update_status(state) do
-    ready =
-      case state.mode do
-        :human_vs_ai -> state.slots.player_1 != :open
-        :human_vs_human -> state.slots.player_1 != :open and state.slots.player_2 != :open
-      end
-
-    if ready, do: %{state | status: :playing}, else: state
-  end
-
-  defp maybe_start_timer(%{status: :playing} = state) do
-    state = cancel_timer(state)
-
-    if human_turn?(state) do
-      ref = Process.send_after(self(), :move_timeout, @move_timeout_ms)
-      deadline = :os.system_time(:millisecond) + @move_timeout_ms
-      %{state | timer_ref: ref, move_deadline: deadline}
-    else
-      %{state | timer_ref: nil, move_deadline: nil}
-    end
-  end
-
-  defp maybe_start_timer(state), do: state
-
-  defp human_turn?(%{game: game, mode: mode}) do
-    game.phase in [:opening, :pie_decision, :playing] and
-      case mode do
-        :human_vs_human -> true
-        :human_vs_ai -> game.current_player == :player_1
-      end
-  end
-
-  defp cancel_timer(%{timer_ref: ref} = state) when not is_nil(ref) do
-    Process.cancel_timer(ref)
-    %{state | timer_ref: nil}
-  end
-
-  defp cancel_timer(state), do: state
-
-  defp maybe_schedule_ai(%{mode: :human_vs_ai, game: game} = state)
-       when game.current_player == :player_2 and game.phase in [:pie_decision, :playing] do
-    Process.send_after(self(), :ai_move, Enum.random(@ai_delay_ms))
-    %{state | status: :ai_thinking}
-  end
-
-  defp maybe_schedule_ai(state), do: state
-
-  defp other_side(:blue), do: :red
-  defp other_side(:red), do: :blue
+  defp cancel_timer(nil), do: :ok
+  defp cancel_timer(ref), do: Process.cancel_timer(ref)
 
   defp broadcast(state) do
     Phoenix.PubSub.broadcast(
@@ -355,20 +221,13 @@ defmodule Havannah.GameServer do
   end
 
   defp public_state(state) do
-    %{
-      id: state.id,
-      mode: state.mode,
-      game: state.game,
-      slots: state.slots,
-      status: state.status,
-      move_deadline: state.move_deadline
-    }
-  end
+    slots =
+      Map.new(state.slots, fn {role, slot} ->
+        {role, if(slot in [:open, :ai], do: slot, else: :occupied)}
+      end)
 
-  defp with_server(game_id, fun) do
-    case Registry.lookup(Havannah.GameRegistry, game_id) do
-      [{pid, _}] -> fun.(pid)
-      [] -> {:error, :not_found}
-    end
+    state
+    |> Map.take([:id, :mode, :game, :status, :move_deadline])
+    |> Map.put(:slots, slots)
   end
 end

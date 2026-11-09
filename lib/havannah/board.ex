@@ -9,17 +9,25 @@ defmodule Havannah.Board do
   Total cells: 3 * 9^2 + 3 * 9 + 1 = 271.
   """
 
+  @type cell :: {integer(), integer()}
+  @type t :: %{cell() => :blue | :red | nil}
+
   @radius 9
 
   @doc "Returns the board radius (size - 1)."
+  @spec radius() :: pos_integer()
   def radius, do: @radius
 
   @doc "Returns true if the given axial coordinate {q, r} is a valid board cell."
-  def valid?({q, r}) do
+  @spec valid?(term()) :: boolean()
+  def valid?({q, r}) when is_integer(q) and is_integer(r) do
     abs(q) <= @radius and abs(r) <= @radius and abs(q + r) <= @radius
   end
 
+  def valid?(_), do: false
+
   @doc "Generates all valid board cells as a list of {q, r} tuples."
+  @spec cells() :: [cell()]
   def cells do
     for q <- -@radius..@radius,
         r <- -@radius..@radius,
@@ -31,6 +39,7 @@ defmodule Havannah.Board do
   Returns the up-to-6 valid neighbors of a given cell.
   Cells on the board edge will have fewer than 6 neighbors.
   """
+  @spec neighbors(cell()) :: [cell()]
   def neighbors({q, r}) do
     [
       {q + 1, r},
@@ -44,6 +53,7 @@ defmodule Havannah.Board do
   end
 
   @doc "Returns an empty board as a map from {q, r} => nil for every valid cell."
+  @spec new_board() :: t()
   def new_board do
     Map.new(cells(), fn cell -> {cell, nil} end)
   end

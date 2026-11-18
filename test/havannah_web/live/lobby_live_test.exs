@@ -5,6 +5,26 @@ defmodule HavannahWeb.LobbyLiveTest do
 
   alias Havannah.GameServer
 
+  test "rules modal supports Escape and close-button dismissal", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(view, "#rules-modal[phx-key=Escape]")
+
+    for {selector, binding} <- [
+          {"#rules-modal", "phx-window-keydown"},
+          {"#rules-modal-close[type=button]", "phx-click"}
+        ] do
+      [command] =
+        view
+        |> element(selector)
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.attribute(binding)
+
+      assert [["hide", %{"to" => "#rules-modal"}]] = Jason.decode!(command)
+    end
+  end
+
   test "creates a human game from the lobby", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
     assert has_element?(view, "#mode-human-vs-human[checked]")

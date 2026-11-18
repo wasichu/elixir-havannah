@@ -17,6 +17,13 @@ relevant source/tests before editing. These instructions apply throughout the re
   release, or runtime changes, also run `just release`. CI builds and boots Docker.
   `just deploy` checks and publishes through `flyctl`; run it only when deployment
   is requested. Keep Fly at one Machine and preserve the explicit origin allowlist.
+- Starting with the next production deployment, track successful production
+  releases with immutable semantic version tags and GitHub Releases, following
+  the README's production-release procedure. Match `mix.exs` to the version tag,
+  target the exact deployed commit, and include verified validation/deployment
+  details in release notes. Do not backfill older deployments or publish success
+  before production verification. This policy does not authorize a commit, push,
+  deployment, or release publication without the user's request.
 - `just outdated` reports all outdated Hex packages; `npm outdated` checks frontend
   packages. `just update` refreshes both lockfiles within their constraints and
   verifies source and assets. Broaden constraints deliberately for major upgrades.
@@ -38,6 +45,10 @@ relevant source/tests before editing. These instructions apply throughout the re
 - `Havannah.GameServer`: sole authority for a match, serialized through GenServer.
   Enforce participation, turn, phase, readiness, and timeouts here even when the UI
   hides controls. Keep browser session identifiers out of snapshots and PubSub.
+  Only the first player may cancel a waiting human invitation. Cancellation
+  broadcasts `{:game_cancelled, game_id}` and stops the temporary process, making
+  its link unavailable. Reject cancellation after an opponent joins and reject
+  resignation before both slots are filled.
 - `Havannah.GameSupervisor` and `Havannah.GameRegistry`: temporary game processes
   addressed by opaque IDs. Never restart a crashed match as an empty game under
   its old ID. Missing or disappeared games must return `{:error, :not_found}`.

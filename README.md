@@ -11,7 +11,11 @@ Corners do not count as edges; a ring may surround stones of either side.
 After the opening move, the second player chooses whether to keep their side or
 swap. Swapping exchanges player-to-color assignments without changing the board.
 The first player then takes the next turn. Each human turn, including the pie
-choice, has a five-minute server-enforced deadline. Players can also resign.
+choice, has a five-minute server-enforced deadline. Before an opponent joins a
+human game, its first player can cancel the invitation and return to the lobby;
+the cancelled link can no longer be joined. Once both players have joined, either
+can resign. After a game ends, a player can start a rematch, which creates a fresh
+game with a new invitation link.
 
 ## Development
 
@@ -59,8 +63,9 @@ New UI components should use Tailwind utilities/custom CSS.
 - `LobbyLive` and `GameLive` render state and submit actions. Signed browser
   sessions preserve player slots across reconnects. Additional sessions spectate.
 
-Matches are held in memory on one node. Restarts/deployments lose matches; games
-and spectator assignments currently remain until the process/node stops. There is
+Matches are held in memory on one node. Restarts/deployments lose matches;
+cancelling a waiting invitation stops its process. Other games and spectator
+assignments currently remain until the process/node stops. There is
 no persistence, idle-game eviction, distributed match routing, or account system.
 DNS clustering alone does not distribute the local Registry. Production hosting
 must keep a match on its owning node; multi-node durability needs a separate design.
@@ -98,5 +103,39 @@ at one Machine because matches use a local Registry; `--ha=false` avoids creatin
 a spare, and `flyctl scale count 1 --app elixir-havannah` corrects an existing
 multi-Machine deployment. Both the public domain and app's `.fly.dev` hostname
 are accepted as LiveView origins. Deployments restart the in-memory game processes.
+
+### GitHub production releases
+
+Starting with the next production deployment, record each successful deployment
+as a version tag and [GitHub Release](https://github.com/wasichu/elixir-havannah/releases),
+following the same practice as `elixir-breakthrough`. Existing production history
+is not backfilled. Fly's GitHub deployment records complement these release notes.
+
+When a production deployment is requested:
+
+1. Choose an unused semantic version tag (`vMAJOR.MINOR.PATCH`) and update the
+   version in `mix.exs` to match. Write release notes describing the changes,
+   validation actually performed, and any operational effects, including the
+   loss of in-memory matches on deployment.
+2. Run `just ci` and `just release`. Commit and push the reviewed changes when
+   authorized. Deploy from a clean checkout of that exact pushed commit using
+   `just deploy`, preserving the single-Machine configuration.
+3. Verify Fly's deployment status and production HTTP health, and smoke-test the
+   changed behavior. Record the deployed commit SHA, production URL, and Fly
+   deployment or GitHub deployment link in the notes. Do not publish a successful
+   production release for a failed or unverified deployment.
+4. Publish the GitHub Release against the exact deployed commit, with its matching
+   version tag and the prepared notes. For example, after assigning `release_tag`
+   and `release_commit` to the chosen version and deployed SHA:
+
+   ```sh
+   gh release create "$release_tag" --repo wasichu/elixir-havannah \
+     --target "$release_commit" --title "Havannah $release_tag" \
+     --notes-file /path/to/release-notes.txt --latest
+   ```
+
+Use a new tag for each release; never move an existing production tag. Publishing
+release notes does not deploy the application. Deployment and release publication
+remain explicit maintainer actions, with no automatic deployment workflow.
 
 See [AGENTS.md](AGENTS.md) for repository-specific implementation and verification guidance.

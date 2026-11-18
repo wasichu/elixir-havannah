@@ -369,6 +369,61 @@ defmodule Havannah.GameServerTest do
   # Resign
   # ---------------------------------------------------------------------------
 
+  describe "cancelling invitations" do
+    test "creator cancellation removes the match, notifies subscribers, and invalidates the link" do
+      id = "cancel-#{System.unique_integer([:positive])}"
+      pid = start_supervised!({GameServer, {id, :human_vs_human}})
+      assert {:ok, :player_1} = GameServer.join(id, "alice")
+      Phoenix.PubSub.subscribe(Havannah.PubSub, "game:#{id}")
+      monitor = Process.monitor(pid)
+
+      assert :ok = GameServer.cancel(id, "alice")
+      assert_receive {:game_cancelled, ^id}
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}
+      assert {:error, :not_found} = GameServer.get_state(id)
+      assert {:error, :not_found} = GameServer.join(id, "bob")
+      assert {:error, :not_found} = GameServer.cancel(id, "alice")
+    end
+
+    test "unjoined and malformed sessions cannot cancel an invitation" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+
+      for session <- ["bob", nil, %{}] do
+        assert {:error, :not_in_game} = GenServer.call(pid, {:cancel, session})
+      end
+
+      assert {:ok, %{status: :waiting}} = get_state(pid)
+    end
+
+    test "joining first prevents cancellation, including by the creator" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      join(pid, "bob")
+      join(pid, "carol")
+
+      assert {:error, :not_waiting} = GenServer.call(pid, {:cancel, "alice"})
+      assert {:error, :not_creator} = GenServer.call(pid, {:cancel, "bob"})
+      assert {:error, :not_creator} = GenServer.call(pid, {:cancel, "carol"})
+      assert :ok = place(pid, "alice", {0, 0})
+      assert :ok = resign(pid, "bob")
+      assert {:error, :not_waiting} = GenServer.call(pid, {:cancel, "alice"})
+    end
+
+    test "AI games cannot be cancelled as invitations" do
+      pid = start_server(:human_vs_ai)
+      join(pid, "alice")
+      assert {:error, :not_waiting} = GenServer.call(pid, {:cancel, "alice"})
+    end
+
+    test "waiting players must cancel rather than resign" do
+      pid = start_server(:human_vs_human)
+      join(pid, "alice")
+      assert {:error, :waiting_for_players} = resign(pid, "alice")
+      assert {:ok, %{status: :waiting, game: %{winner: nil}}} = get_state(pid)
+    end
+  end
+
   describe "resign" do
     setup do
       pid = start_server(:human_vs_human)

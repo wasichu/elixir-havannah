@@ -31,6 +31,11 @@ defmodule Havannah.GameServer do
 
   def resign(game_id, session_id), do: call(game_id, {:resign, session_id})
 
+  @doc "Cancels a waiting human invitation, invalidating its game ID. Only its first player may cancel."
+  @spec cancel(String.t(), String.t()) ::
+          :ok | {:error, :not_found | :not_in_game | :not_creator | :not_waiting}
+  def cancel(game_id, session_id), do: call(game_id, {:cancel, session_id})
+
   def via(game_id), do: {:via, Registry, {Havannah.GameRegistry, game_id}}
 
   defp call(game_id, message) do
@@ -98,10 +103,29 @@ defmodule Havannah.GameServer do
 
   def handle_call({:resign, session_id}, _from, state) do
     with {:ok, role} <- authorize(state, session_id, :resign),
+         true <- ready?(state),
          {:ok, game} <- Game.resign(state.game, role) do
       {:reply, :ok, transition(state, game)}
     else
+      false -> {:reply, {:error, :waiting_for_players}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:cancel, session_id}, _from, state) do
+    cond do
+      not Map.has_key?(state.assignments, session_id) ->
+        {:reply, {:error, :not_in_game}, state}
+
+      state.slots.player_1 != session_id ->
+        {:reply, {:error, :not_creator}, state}
+
+      state.mode != :human_vs_human or state.status != :waiting ->
+        {:reply, {:error, :not_waiting}, state}
+
+      true ->
+        Phoenix.PubSub.broadcast(Havannah.PubSub, "game:#{state.id}", {:game_cancelled, state.id})
+        {:stop, :normal, :ok, state}
     end
   end
 

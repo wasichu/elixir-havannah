@@ -17,6 +17,8 @@ defmodule HavannahWeb.Layouts do
       role="dialog"
       aria-modal="true"
       aria-labelledby="rules-modal-title"
+      phx-window-keydown={JS.hide(to: "#rules-modal")}
+      phx-key="Escape"
     >
       <div
         class="absolute inset-0 bg-black/50"
@@ -32,6 +34,8 @@ defmodule HavannahWeb.Layouts do
             How to Play Havannah
           </h2>
           <button
+            id="rules-modal-close"
+            type="button"
             phx-click={JS.hide(to: "#rules-modal")}
             class="btn btn-ghost btn-sm btn-circle"
             aria-label="Close"
@@ -43,8 +47,25 @@ defmodule HavannahWeb.Layouts do
           <div>
             <h3 class="font-semibold text-base-content mb-1">Basics</h3>
             <p>
-              Two players take turns placing stones on empty hexagons. Blue moves first. The board is a hexagonal grid of size&nbsp;10.
+              Two players take turns placing stones on empty hexagons. Blue moves first. The board is a hexagonal grid.
             </p>
+            <svg
+              id="rules-board-diagram"
+              viewBox="-70 -62 140 124"
+              width="160"
+              height="142"
+              role="img"
+              aria-label="An empty Havannah board: small hexagonal cells arranged in a larger hexagon"
+              class="mt-3 max-w-full text-base-content/70"
+            >
+              <g fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-width="0.5">
+                <polygon
+                  :for={{q, r} <- Havannah.Board.cells()}
+                  points="0,-4 3.464,-2 3.464,2 0,4 -3.464,2 -3.464,-2"
+                  transform={"translate(#{6.928 * (q + r / 2)}, #{6 * r})"}
+                />
+              </g>
+            </svg>
           </div>
           <div>
             <h3 class="font-semibold text-base-content mb-1">Pie Rule</h3>
@@ -293,7 +314,8 @@ defmodule HavannahWeb.Layouts do
           <div>
             <h3 class="font-semibold text-base-content mb-1">Resign &amp; Timeout</h3>
             <p>
-              Either player may resign at any time, conceding the game. Each move has a <strong>5-minute timer</strong>. If the timer runs out, that player loses.
+              Before an opponent joins, you can cancel the invitation. Once both players have joined,
+              either player may resign, conceding the game. Each move has a <strong>5-minute timer</strong>. If the timer runs out, that player loses.
             </p>
           </div>
         </div>

@@ -80,12 +80,27 @@ defmodule HavannahWeb.GameLive do
     {:noreply, socket}
   end
 
-  def handle_event("rematch", _params, socket) do
-    mode = socket.assigns.game_state.mode
+  def handle_event("cancel_invitation", _params, socket) do
+    case GameServer.cancel(socket.assigns.game_id, socket.assigns.session_id) do
+      :ok ->
+        {:noreply, invitation_cancelled(socket)}
 
-    case GameSupervisor.start_game(mode) do
-      {:ok, game_id} -> {:noreply, push_navigate(socket, to: ~p"/game/#{game_id}")}
-      {:error, _reason} -> {:noreply, put_flash(socket, :error, "Unable to start a rematch.")}
+      {:error, :not_found} ->
+        {:noreply, push_navigate(socket, to: ~p"/")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "This invitation can no longer be cancelled.")}
+    end
+  end
+
+  def handle_event("rematch", _params, socket) do
+    if can_rematch?(socket.assigns) do
+      case GameSupervisor.start_game(socket.assigns.game_state.mode) do
+        {:ok, game_id} -> {:noreply, push_navigate(socket, to: ~p"/game/#{game_id}")}
+        {:error, _reason} -> {:noreply, put_flash(socket, :error, "Unable to start a rematch.")}
+      end
+    else
+      {:noreply, socket}
     end
   end
 
@@ -97,6 +112,10 @@ defmodule HavannahWeb.GameLive do
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   @impl true
+  def handle_info({:game_cancelled, game_id}, %{assigns: %{game_id: game_id}} = socket) do
+    {:noreply, invitation_cancelled(socket)}
+  end
+
   def handle_info({:game_updated, game_state}, socket) do
     {:noreply, assign_game(socket, game_state)}
   end
@@ -117,6 +136,12 @@ defmodule HavannahWeb.GameLive do
     |> assign(:board_cells, build_board_cells(game_state.game))
     |> assign(:remaining_seconds, remaining_seconds(game_state.move_deadline))
     |> schedule_tick()
+  end
+
+  defp invitation_cancelled(socket) do
+    socket
+    |> put_flash(:info, "Invitation cancelled.")
+    |> push_navigate(to: ~p"/")
   end
 
   # ---------------------------------------------------------------------------
@@ -144,6 +169,17 @@ defmodule HavannahWeb.GameLive do
           </div>
 
           <div class="flex items-center gap-2 shrink-0">
+            <%= if can_cancel?(assigns) do %>
+              <button
+                id="cancel-invitation"
+                type="button"
+                phx-click="cancel_invitation"
+                class="btn btn-sm btn-ghost text-base-content/70 hover:text-error"
+              >
+                Cancel invitation
+              </button>
+            <% end %>
+
             <%!-- Per-move countdown timer --%>
             <%= if @remaining_seconds && @game_state.game.phase in [:opening, :pie_decision, :playing] do %>
               <div class={[
@@ -168,7 +204,7 @@ defmodule HavannahWeb.GameLive do
             <% end %>
 
             <%!-- Rematch button (game over only) --%>
-            <%= if @game_state.game.phase == :game_over do %>
+            <%= if can_rematch?(assigns) do %>
               <button id="rematch" phx-click="rematch" class="btn btn-sm btn-primary">
                 Rematch
               </button>
@@ -202,16 +238,17 @@ defmodule HavannahWeb.GameLive do
           <% end %>
 
           <%= if @game_state.mode == :human_vs_human do %>
-            <span class="ml-auto flex items-center gap-1">
-              Share:
-              <span
-                class="font-mono text-base-content/70 underline cursor-pointer"
-                title={game_url(@game_state.id)}
-                phx-click={JS.dispatch("phx:copy", detail: %{text: game_url(@game_state.id)})}
-              >
-                /game/{@game_state.id}
-              </span>
-            </span>
+            <button
+              id="copy-game-link"
+              type="button"
+              phx-hook="CopyGameLink"
+              phx-update="ignore"
+              data-path={~p"/game/#{@game_state.id}"}
+              class="ml-auto inline-flex min-h-11 items-center gap-2 rounded-lg border border-base-300 px-3 text-sm font-medium text-base-content hover:bg-base-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+              <.icon name="hero-clipboard-document" class="size-4 shrink-0" />
+              <span data-copy-label aria-live="polite">Copy game link</span>
+            </button>
           <% end %>
         </div>
 
@@ -383,7 +420,16 @@ defmodule HavannahWeb.GameLive do
 
   defp can_resign?(%{role: role, game_state: gs}) do
     role in [:player_1, :player_2] and
+      gs.status != :waiting and
       gs.game.phase in [:opening, :pie_decision, :playing]
+  end
+
+  defp can_cancel?(%{role: role, game_state: gs}) do
+    role == :player_1 and gs.mode == :human_vs_human and gs.status == :waiting
+  end
+
+  defp can_rematch?(%{role: role, game_state: gs}) do
+    role in [:player_1, :player_2] and gs.game.phase == :game_over
   end
 
   defp remaining_seconds(nil), do: nil
@@ -495,8 +541,4 @@ defmodule HavannahWeb.GameLive do
   defp side_label(:blue), do: "Blue"
   defp side_label(:red), do: "Red"
   defp side_label(nil), do: ""
-
-  defp game_url(game_id) do
-    HavannahWeb.Endpoint.url() <> ~p"/game/#{game_id}"
-  end
 end
